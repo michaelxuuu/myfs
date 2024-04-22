@@ -1,0 +1,1 @@
+A simple inode file system implementation. It takes a file and formats it to build a file system structure upon it. It is single-threaded and is orginally made as the 'mkfs' (make file system) tool for my own kernel to use. The idea is to build a file system in a vhd (virtual hard disk) that my bootloader can boot my toy kernel boot from.
