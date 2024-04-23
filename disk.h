@@ -7,4 +7,5 @@
 #define NBLOCKS_TOT 1024 // Disk size 512k
 #define NBLOCKS_RES 64   // Reserve 64 blocks (32k) for booting (MBR and bootloader)
 #define NBLOCKS_LOG 30
+#define SUBLOCK_NUM NBLOCKS_RES // super block starts immediately after the reserved blocks
 #define NINODES 200

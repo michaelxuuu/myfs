@@ -8,10 +8,10 @@ struct superblock {
     u32 nblock_tot;
     u32 nblock_res;
     u32 nblock_log;
+    u32 nblock_dat;
     // Derived
     u32 nblock_inode;
     // Start block of each disk section
-    u32 ssuper;
     u32 slog;
     u32 sinode;
     u32 sbitmap;
@@ -30,6 +30,12 @@ struct dinode {
   u32 addrs[NDIRECT+NINDRECT];
 };
 
+// in-memory copy of the on-disk inode
+struct inode {
+    int num;
+    struct dinode din;
+};
+
 // Directory entry sturcture
 // Each directory contains an array of directory entries,
 // each pointing to an inode representing a file or another directory.
@@ -45,3 +51,12 @@ struct dirent {
 #define NINODES_PERBLOCK (BLOCKSIZE / sizeof(struct dinode))
 #define NDIRENTS_PERBLOCK (BLOCKSIZE / sizeof(struct dirent))
 #define NADDRS_PERBLOCK (BLOCKSIZE / sizeof(u32))
+
+union dblock {
+    struct superblock su;
+    u8  bytes[BLOCKSIZE];
+    u32 addrs[NADDRS_PERBLOCK];
+    struct dinode inodes[NINODES_PERBLOCK];
+    struct dirent dirents[NDIRENTS_PERBLOCK];
+};
+
