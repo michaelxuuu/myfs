@@ -79,62 +79,43 @@ static int write_inode(u32 n, struct dinode *p) {
     return 0;
 }
 
-static int free_indirect(u32 n) {
-    union block ib;
-    // Read indirect block
-    disk_read(n, &ib);
-    // Free all blocks pointed to by this indirect block
+static int get_ilevel(int ptr_idx) {
+    if (ptr_idx < NDIRECT)
+        return 0;
+    else if (ptr_idx < NDIRECT+NINDRECT)
+        return 1;
+    else
+        return 2;
+}
+
+static int free_ptr(u32 n, int ilevel) {
+    if (!ilevel)
+        assert(bitmap_free(n));
+    union block b;
+    disk_read(n, &b);
     for (int i = 0; i < NPTRS_PER_BLOCK; i++)
-        if (ib.ptrs[i])
-            assert(bitmap_free(ib.ptrs[i]));
-    // Free the indirect block itself
+        if (b.ptrs[i])
+            free_ptr(b.ptrs[i], ilevel--);
     assert(!bitmap_free(n));
     return 0;
 }
 
-static int free_dindirect(u32 n) {
-    union block dib;
-    // Read doubly-indirect block
-    disk_read(n, &dib);
-    // Free all indirect blocks pointed to by this doubly-indirect block
-    for (int i = 0; i < NPTRS_PER_BLOCK; i++)
-        if (dib.ptrs[i])
-            free_indirect(dib.ptrs[i]);
-    // Free the doubly-indirect block itself
-    assert(bitmap_free(n));
-    return 0;
-}
-
 // Free an inode. Need also to free all data blocks linked
-static int free_inode(u32 n) {
+int free_inode(u32 n) {
     union block b;
     struct dinode di;
-
     if (n >= fs.su.ninodes)
         return -1;
-
     read_inode(n, &di);
-
     di.type = 0;
-
-    for (int i = 0; i < NPTRS; i++) {
-
-        if (!di.ptrs[i])
-            continue;
-
-        if (i < NDIRECT)
-            assert(!bitmap_free(di.ptrs[i]));
-        else if (i < NDIRECT+NINDRECT)
-            free_indirect(di.ptrs[i]);
-        else
-            free_dindirect(di.ptrs[i]);
-    }
-
+    for (int i = 0; i < NPTRS; i++)
+        if (di.ptrs[i])
+            free_ptr(di.ptrs[i], get_ilevel(i));
     return 0;
 }
 
 // Sweep through the inode blocks and return the inum of the free inode if found.
-static int alloc_indoe(u16 type) {
+int alloc_indoe(u16 type) {
     if (type > T_DEV)
         return -1;
     for (int i = 0; i < fs.su.nblock_inode; i++) {
@@ -154,7 +135,7 @@ static int alloc_indoe(u16 type) {
     return -1;
 }
 
-static int inode_write(u32 n, char buf[], u32 len, u32 off) {
+int inode_write(u32 n, char buf[], u32 len, u32 off) {
     struct dinode di;
     u32 sb = off/BLOCKSIZE;
     u32 eb = (off + len)/BLOCKSIZE;
@@ -258,7 +239,7 @@ static int inode_write(u32 n, char buf[], u32 len, u32 off) {
 }
 
 
-static int inode_read(u32 n, char b[], u32 l, u32 o) {
+int inode_read(u32 n, char b[], u32 l, u32 o) {
 
 }
 
