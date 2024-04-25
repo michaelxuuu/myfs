@@ -12,12 +12,12 @@ struct {
 
 // Disk (block) operations
 // Write a disk block
-static void disk_read(int n, char buf[BLOCKSIZE]) {
+static void disk_read(int n, void *buf) {
     assert(lseek(fs.vd, n * BLOCKSIZE, SEEK_SET) == n * BLOCKSIZE);
     assert(write(fs.vd, buf, BLOCKSIZE) == BLOCKSIZE);
 }
 // Read a disk block
-static void disk_write(int n, char buf[BLOCKSIZE]) {
+static void disk_write(int n, void *buf) {
     assert(lseek(fs.vd, n * BLOCKSIZE, SEEK_SET) == n * BLOCKSIZE);
     assert(read(fs.vd, buf, BLOCKSIZE) == BLOCKSIZE);
 }
@@ -30,7 +30,7 @@ static void zero_block(int n) {
 // Bitmap operations
 // Allocate a data block
 static u32 bitmap_alloc() {
-    union dblock b;
+    union block b;
     disk_read(fs.su.sbitmap, &b);
     for (int i = 0; i < fs.su.nblock_tot; i ++) {
         if (b.bytes[i] == 0xff)
@@ -49,7 +49,7 @@ static u32 bitmap_alloc() {
 }
 // Free a data block
 static int bitmap_free(u32 n) {
-    union dblock b;
+    union block b;
     if (n < fs.su.sdata || n >= fs.su.sdata + fs.su.nblock_dat)
         return -1;
     disk_read(fs.su.sbitmap, &b);
@@ -63,62 +63,82 @@ static int bitmap_free(u32 n) {
 
 // inode operations
 // Load the inode with the inode number 'n' into memory
-static int read_inode(int n, struct dinode *p) {
-    union dblock b;
+static int read_inode(u32 n, struct dinode *p) {
+    union block b;
     disk_read(fs.su.sinode + n/NINODES_PER_BLOCK, &b);
     *p = b.inodes[n%NINODES_PER_BLOCK];
     return 0;
 }
 
 // Update the on-disk inode with the inode number 'n'
-static int write_inode(int n, struct dinode *p) {
-    union dblock b;
+static int write_inode(u32 n, struct dinode *p) {
+    union block b;
     disk_read(fs.su.sinode + n/NINODES_PER_BLOCK, &b);
     b.inodes[n%NINODES_PER_BLOCK] = *p;
     disk_write(fs.su.sinode + n/NINODES_PER_BLOCK, &b);
     return 0;
 }
 
-// // Free an inode. Need also to free all data blocks linked
-// static int inode_free(u32 n) {
-//     union dblock b;
-//     struct superblock su;
-//     read_super(&su);
-//     if (n >= fs.su.ninodes || n == 1) // can't free the root directory inode
-//         return -1;
-//     disk_read(fs.su.sinode + n/NINODES_PER_BLOCK, &b);
-//     struct dinode *di = &b.inodes[n%NINODES_PER_BLOCK]; // grab a pointer to it
-//     di->type = 0; // free the inode itself
-//     // free data blocks
-//     for (int i = 0; i < NPTRS_CLASS3; i++) {
-//         if (!di->ptrs[i])
-//             continue;
-            
-//         if (i < NDIRECT)
-//             assert(!bitmap_free(di->ptrs[i]));
-//         else {
-//             // read the direct block
-//             union dblock ib;
-//             disk_read(di->ptrs[i], &ib);
-//             // free data blocks
-//             for (int j = 0; j < NPTRS_PER_BLOCK; j++)
-//                 if (ib.addrs[i])
-//                     assert(!bitmap_free(di->ptrs[j]));
-//             // free the indirect block
-//             assert(!bitmap_free(di->ptrs[i]));
-//         }
-//     }
-//     // write the inode back to disk
-//     disk_write(fs.su.sinode + n/NINODES_PER_BLOCK, &b);
-//     return 0;
-// }
+static int free_indirect(u32 n) {
+    union block ib;
+    // Read indirect block
+    disk_read(n, &ib);
+    // Free all blocks pointed to by this indirect block
+    for (int i = 0; i < NPTRS_PER_BLOCK; i++)
+        if (ib.ptrs[i])
+            assert(bitmap_free(ib.ptrs[i]));
+    // Free the indirect block itself
+    assert(!bitmap_free(n));
+    return 0;
+}
 
-// Sweeb through the inode blocks and return the inum of the free inode if found.
+static int free_dindirect(u32 n) {
+    union block dib;
+    // Read doubly-indirect block
+    disk_read(n, &dib);
+    // Free all indirect blocks pointed to by this doubly-indirect block
+    for (int i = 0; i < NPTRS_PER_BLOCK; i++)
+        if (dib.ptrs[i])
+            free_indirect(dib.ptrs[i]);
+    // Free the doubly-indirect block itself
+    assert(bitmap_free(n));
+    return 0;
+}
+
+// Free an inode. Need also to free all data blocks linked
+static int free_inode(u32 n) {
+    union block b;
+    struct dinode di;
+
+    if (n >= fs.su.ninodes)
+        return -1;
+
+    read_inode(n, &di);
+
+    di.type = 0;
+
+    for (int i = 0; i < NPTRS; i++) {
+
+        if (!di.ptrs[i])
+            continue;
+
+        if (i < NDIRECT)
+            assert(!bitmap_free(di.ptrs[i]));
+        else if (i < NDIRECT+NINDRECT)
+            free_indirect(di.ptrs[i]);
+        else
+            free_dindirect(di.ptrs[i]);
+    }
+
+    return 0;
+}
+
+// Sweep through the inode blocks and return the inum of the free inode if found.
 static int alloc_indoe(u16 type) {
     if (type > T_DEV)
         return -1;
     for (int i = 0; i < fs.su.nblock_inode; i++) {
-        union dblock b;
+        union block b;
         disk_read(i + fs.su.sinode, &b);
         for (int j = 0; j < NINODES_PER_BLOCK; j++) {
             if (!b.inodes[j].type) {
@@ -154,9 +174,9 @@ static int inode_write(u32 n, char buf[], u32 len, u32 off) {
         // (a) including inodes, (b) indirect blocks, and (c) doubly-
         // indirect blocks
 
-        union dblock b;     // Data block
-        union dblock ib;    // Doubly indirect block (if used)
-        union dblock dib;   // Indirect block (if used)
+        union block b;     // Data block
+        union block ib;    // Doubly indirect block (if used)
+        union block dib;   // Indirect block (if used)
 
         u32 sz;             // How much we write to `b`
         int tmp;
@@ -214,10 +234,10 @@ static int inode_write(u32 n, char buf[], u32 len, u32 off) {
         // If `i`th block is pointed to by a indirect block, the direct pointer should be found in the indirect block - `id`
         // (Recall that indirect block could've been loaded from either a doubly-indirect block or indoe)
         if (indirect)
-            direct = ib.ptrs[(i - NBLOCKS_TO_DIRECT) % NBLOCKS_BY_INDRECT];
+            direct = &ib.ptrs[(i - NBLOCKS_TO_DIRECT) % NBLOCKS_BY_INDRECT];
         // If `i`th block is pointed to by a direct pointer, the direct pointer should be found in the inode - `di`
         else
-            direct = di.ptrs[i];
+            direct = &di.ptrs[i];
 
         // Writing... :)
         disk_read(*direct, &b);

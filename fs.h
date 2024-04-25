@@ -65,7 +65,7 @@ struct dirent {
     char name[MAX_FILE_NAME];
 };
 
-union dblock {
+union block {
     struct superblock su;
     u8  bytes[BLOCKSIZE];
     u32 ptrs[NPTRS_PER_BLOCK];
