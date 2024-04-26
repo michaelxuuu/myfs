@@ -7,7 +7,7 @@
 
 struct {
     int vd; // file desc pointing to the "virtual disk"
-    struct superblock su; // in-memory of the on-disk super block
+    struct superblock su; // in-memory copy of super block
 } fs;
 
 // Disk (block) operations
@@ -88,19 +88,46 @@ static int get_ilevel(int ptr_idx) {
         return 2;
 }
 
-static int free_inode_ptr(u32 n, int ilevel) {
-    if (!ilevel)
+// There are three types of blocks:
+//
+// 1. Data blocks
+// 2. Singly-indirect blocks
+// 3. Doubly-indirect blocks
+//
+// We consider all these blocks to be *indirect* blocks
+// and distinguish them by their "indirect level," ilevel for short.
+//
+// Below are the ilevels for each type of block:
+// Data blocks:             ilevel=0
+// Singly-indirect blocks:  ilevel=1
+// Doubly-indirect blocks:  ilevel=2
+
+// Frees a general indirect block (can be a data block if ilevel=0). Recursively
+// frees all sub-level blocks based on the ilevel value. For example, an initial
+// call with ilevel=2 for a doubly-indirect block will recursively free all
+// singly-indirect blocks and their respective data blocks.
+static int free_indirect(u32 n, int ilevel) {
+    // ilevel=0 is the base case: it is a data block
+    if (!ilevel) {
         assert(bitmap_free(n));
+        return 0;
+    }
+    // Not a data block. Then it must be an indirect block.
+    // We treat doubly-indirect and singly-indirect blocks
+    // the same since they are all just a block of pointers.
     union block b;
+    // Read the indirect block
     disk_read(n, &b);
+    // Free the block after reading into memory
+    assert(!bitmap_free(n));
+    // Recursively free all referenced sub-level blocks
     for (int i = 0; i < NPTRS_PER_BLOCK; i++)
         if (b.ptrs[i])
-            free_inode_ptr(b.ptrs[i], ilevel--);
-    assert(!bitmap_free(n));
+            free_indirect(b.ptrs[i], ilevel--); // Decrement ilevel per recursion
     return 0;
 }
 
-// Free an inode. Need also to free all data blocks linked
+// Free an inode. Also need to free all referenced data blocks.
 int free_inode(u32 n) {
     union block b;
     struct dinode di;
@@ -110,7 +137,8 @@ int free_inode(u32 n) {
     di.type = 0;
     for (int i = 0; i < NPTRS; i++)
         if (di.ptrs[i])
-            free_ptr(di.ptrs[i], get_ilevel(i));
+            free_indirect(di.ptrs[i], get_ilevel(i));
+    write_inode(n, &di);
     return 0;
 }
 
@@ -135,31 +163,73 @@ int alloc_indoe(u16 type) {
     return -1;
 }
 
-int indoe_ptr_write(u32 *ptr, char *buf[], u32 *bytesleft, u32 off, int ilevel, int *is_first_write, u32 *blockstraveled, u32 sblock, u32 eblock) {
-    // We have reached a data block
+struct write_info {
+    u32 *ptr;
+    char **buf;
+    u32 *nleft;
+    int ilevel;
+    int *first;
+    u32 sblock;
+    u32 eblock;
+    u32 *far;
+};
+
+static int new_blockstraveled(u32 blockstraveled, int ilevel) {
+    switch (ilevel)
+    {
+    case 0:
+        return blockstraveled+1;
+    case 1:
+        return blockstraveled+NBLOCKS_BY_INDRECT;
+    case 2:
+        return blockstraveled+NBLOCKS_BY_DINDRECT;
+    default:
+        assert(0);
+    }
+}
+
+static int overlap(u32 s1, u32 e1, u32 s2, u32 e2) {
+    s1 = s1 < s2 ? s2 : s1;
+    e1 = e1 < e2 ? e1 : e2;
+    if (s1 <= e1)
+        return 1;
+    return 0;
+}
+
+int write_indirect(u32 *ptr, char *buf[], u32 *bytesleft, u32 off, int ilevel, int *is_first_write, u32 *blockstraveled, u32 sblock, u32 eblock) {
     union block b;
 
     if (!*bytesleft)
         return 0;
 
+    // Do we need to load this indirect block?
+    if (!overlap(*new_blockstraveled, new_blockstraveled(*blockstraveled, ilevel), sblock, eblock)) {
+        *blockstraveled = new_blockstraveled, new_blockstraveled(*blockstraveled, ilevel);
+        return 0;
+    }
+
+    // We must load this indirect block cus it's involved in the write.
     if (!*ptr && !(*ptr = bitmap_alloc())) {
         *bytesleft = 0;
         return 1;
     }
     
-    if (!ilevel && *bytesleft && *blockstraveled >= sblock && *blockstraveled <= eblock) {
-        int start = 0;
-        int wsize = bytesleft < BLOCKSIZE ? bytesleft : BLOCKSIZE;
-        if (*is_first_write) {
-            start = off % BLOCKSIZE;
-            wsize = BLOCKSIZE - start;
-            *is_first_write = 0;
+    // Data block
+    if (!ilevel) {
+        if (*bytesleft && *blockstraveled >= sblock && *blockstraveled <= eblock) {
+            int start = 0;
+            int wsize = bytesleft < BLOCKSIZE ? bytesleft : BLOCKSIZE;
+            if (*is_first_write) {
+                start = off % BLOCKSIZE;
+                wsize = BLOCKSIZE - start;
+                *is_first_write = 0;
+            }
+            buf += wsize;
+            bytesleft -= wsize;
+            disk_read(*ptr, &b);
+            memcpy(&b.bytes[start], buf, wsize);
+            disk_write(*ptr, &b);
         }
-        buf += wsize;
-        bytesleft -= wsize;
-        disk_read(*ptr, &b);
-        memcpy(&b.bytes[start], buf, wsize);
-        disk_write(*ptr, &b);
         (*blockstraveled)++;
         return 0;
     }
@@ -177,15 +247,16 @@ int indoe_ptr_write(u32 *ptr, char *buf[], u32 *bytesleft, u32 off, int ilevel, 
     return r;
 }
 
-int inode_write(u32 n, char buf[], u32 len, u32 off) {
+int inode_write(u32 n, char *buf, u32 sz, u32 off) {
     struct dinode di;
-    u32 end = off + len;
+    u32 sbyte = off;
+    u32 ebyte = off + sz;
+    u32 sblock = sbyte/BLOCKSIZE;
+    u32 eblock = ebyte/BLOCKSIZE;
     if (n >= fs.su.ninodes)
         return -1;
     if (read_inode(n, &di))
         return -1;
-    u32 sblock = off/BLOCKSIZE;
-    u32 eblock = end/BLOCKSIZE;
     for (int i = 0; i < NPTRS; i++) {
         if (i < NDIRECT) {
 
