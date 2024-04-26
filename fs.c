@@ -88,14 +88,14 @@ static int get_ilevel(int ptr_idx) {
         return 2;
 }
 
-static int free_ptr(u32 n, int ilevel) {
+static int free_inode_ptr(u32 n, int ilevel) {
     if (!ilevel)
         assert(bitmap_free(n));
     union block b;
     disk_read(n, &b);
     for (int i = 0; i < NPTRS_PER_BLOCK; i++)
         if (b.ptrs[i])
-            free_ptr(b.ptrs[i], ilevel--);
+            free_inode_ptr(b.ptrs[i], ilevel--);
     assert(!bitmap_free(n));
     return 0;
 }
@@ -135,106 +135,66 @@ int alloc_indoe(u16 type) {
     return -1;
 }
 
+int indoe_ptr_write(u32 *ptr, char *buf[], u32 *bytesleft, u32 off, int ilevel, int *is_first_write, u32 *blockstraveled, u32 sblock, u32 eblock) {
+    // We have reached a data block
+    union block b;
+
+    if (!*bytesleft)
+        return 0;
+
+    if (!*ptr && !(*ptr = bitmap_alloc())) {
+        *bytesleft = 0;
+        return 1;
+    }
+    
+    if (!ilevel && *bytesleft && *blockstraveled >= sblock && *blockstraveled <= eblock) {
+        int start = 0;
+        int wsize = bytesleft < BLOCKSIZE ? bytesleft : BLOCKSIZE;
+        if (*is_first_write) {
+            start = off % BLOCKSIZE;
+            wsize = BLOCKSIZE - start;
+            *is_first_write = 0;
+        }
+        buf += wsize;
+        bytesleft -= wsize;
+        disk_read(*ptr, &b);
+        memcpy(&b.bytes[start], buf, wsize);
+        disk_write(*ptr, &b);
+        (*blockstraveled)++;
+        return 0;
+    }
+
+    // If it's not a data block, then it must be an indirect block.
+    // Caring not whether it is singly-indirect or doubly-indirect,
+    // we simply read it and call indoe_ptr_write() with ilevel--
+    // and let the next call decide what to do next.
+    int r = 0;
+    disk_read(*ptr, &b);
+    for (int i = 0; i < NPTRS_PER_BLOCK; i++)
+        if (b.ptrs[i]) // !!!!!!!
+            r |= indoe_ptr_write(b.ptrs[i], buf, bytesleft, off, ilevel--, is_first_write, blockstraveled, sblock, eblock);
+    disk_write(*ptr, &b);
+    return r;
+}
+
 int inode_write(u32 n, char buf[], u32 len, u32 off) {
     struct dinode di;
-    u32 sb = off/BLOCKSIZE;
-    u32 eb = (off + len)/BLOCKSIZE;
+    u32 end = off + len;
     if (n >= fs.su.ninodes)
         return -1;
     if (read_inode(n, &di))
         return -1;
-    // Update the file size if necessary
-    if (off + len > di.size)
-        di.size = off + len;
-    for (int i = sb; i < eb; i++) {
-        // In each iteration, we do the following things:
-        // 1. Read a block into buffer `d`
-        // 2. Write `sz` bytes to it starting from `start`
-        // 3. Write it back to disk
-        // 4. Update any on-disk data structure we might have changed,
-        // (a) including inodes, (b) indirect blocks, and (c) doubly-
-        // indirect blocks
+    u32 sblock = off/BLOCKSIZE;
+    u32 eblock = end/BLOCKSIZE;
+    for (int i = 0; i < NPTRS; i++) {
+        if (i < NDIRECT) {
 
-        union block b;     // Data block
-        union block ib;    // Doubly indirect block (if used)
-        union block dib;   // Indirect block (if used)
+        } else if (i < NDIRECT+NINDRECT) {
 
-        u32 sz;             // How much we write to `b`
-        int tmp;
-        u32 start;          // Where we start writing within `b`
+        } else {
 
-        // A direct pointer can be found in (1) an inode and (2) a singly-indirect block
-        u32 *direct;        // &inode->ptr[x] where x falls into the range of indices of direct pointers
-                            // *or* points to &ib.ptrs[x]
-        // A indirect pointer can be found in (1) an inode and (2) a doubly-indirect block
-        u32 *indirect;      // &inode->ptr[x] where x falls into the range of indices of singly-indirect pointers
-                            // *or* points to &dib.ptrs[x]
-        u32 *dindirect;     // &inode->ptr[x] where x falls into the range of indices of doubly-indirect pointers
-
-        direct = 0;
-        indirect = 0;
-        dindirect = 0;
-
-        start = 0;
-        sz = (BLOCKSIZE < len) ? BLOCKSIZE : len;
-
-        // The start position within the first block we write and the
-        // number of bytes we write there depends on `off`
-        if (i == sb) {
-            start = off % BLOCKSIZE;
-            sz = BLOCKSIZE - start;
         }
-
-        // `len` is the number of bytes left to be written
-        // buf points to the start of the data hasn't be read from the 
-        // input buffer
-        len -= sz;
-        buf += sz;
-
-        // `i`th block is out-of-bounds
-        if (i >= NBLOCKS_TO_DINDIRECT)
-            return -1;
-
-        //  `i`th block falls into the range of blocks pointed to by doubly-indirect pointers :o
-        if (i >= NBLOCKS_TO_INDIRECT)
-            dindirect = &di.ptrs[(i - NBLOCKS_TO_INDIRECT) / NBLOCKS_BY_DINDRECT];
-        // Load this doubly-indirect block if `i`th block is the *FIRST* block it has
-        if (dindirect && ((i - NBLOCKS_TO_INDIRECT) % NBLOCKS_BY_DINDRECT) == 0)
-                disk_read(*dindirect, &dib);
-
-        // If `i`th block is pointed to by a doubly-indirect block, the indirect pointer should be found in the corresponding doubly-indirect block - `dib`
-        if (dindirect)
-            indirect = &dib.ptrs[(i - (tmp = NBLOCKS_TO_INDIRECT)) / NBLOCKS_BY_INDRECT];
-        // If `i`th block is pointed to by a indirect block, the indirect pointer should be found in the inode - `di`
-        else if (i >= NBLOCKS_TO_DIRECT)
-            indirect = &di.ptrs[(i - (tmp = NBLOCKS_TO_DIRECT)) / NBLOCKS_BY_INDRECT];
-        // Load this indirect block if `i`th block is the *FIRST* block it has
-        if (indirect && ((i - tmp) % NBLOCKS_BY_INDRECT) == 0)
-            disk_read(*indirect, &ib);
-
-        // If `i`th block is pointed to by a indirect block, the direct pointer should be found in the indirect block - `id`
-        // (Recall that indirect block could've been loaded from either a doubly-indirect block or indoe)
-        if (indirect)
-            direct = &ib.ptrs[(i - NBLOCKS_TO_DIRECT) % NBLOCKS_BY_INDRECT];
-        // If `i`th block is pointed to by a direct pointer, the direct pointer should be found in the inode - `di`
-        else
-            direct = &di.ptrs[i];
-
-        // Writing... :)
-        disk_read(*direct, &b);
-        memcpy(&b.bytes[start], buf, len);
-        disk_write(*direct, &b);
-
-        // Write this doubly-indirect block back to disk if `i`th block is the *last* block it has (regardless of whether it's been modified or not)
-        if (dindirect && ((i - NBLOCKS_TO_INDIRECT) % NBLOCKS_BY_DINDRECT) == (NBLOCKS_BY_DINDRECT - 1))
-            disk_write(*dindirect, &dib);
-        // Write this indirect block back to disk if `i`th block is the *last* block it has (regardless of whether it's been modified or not)
-        if (indirect && ((i - tmp) % NBLOCKS_BY_INDRECT) == (NBLOCKS_BY_INDRECT - 1))
-            disk_write(*indirect, &ib);
     }
-
-    // write the inode back in case we've modified it which we mostly likely did :)
-    write_inode(n, &di);
     return 0;
 }
 
