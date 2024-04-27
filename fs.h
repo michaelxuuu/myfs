@@ -28,18 +28,6 @@ struct superblock {
 #define NDINDRECT               1
 #define NPTRS                   (NDIRECT+NINDRECT+NDINDRECT)
 
-// #blocks pointed to by an inode indirect pointer
-#define NBLOCKS_BY_INDRECT      NPTRS_PER_BLOCK
-// #blocks pointed to by an inode doubly-indirect pointer
-#define NBLOCKS_BY_DINDRECT     (NPTRS_PER_BLOCK*NPTRS_PER_BLOCK)
-
-// #blocks pointed to by all direct pointers in an inode
-#define NBLOCKS_TO_DIRECT       NDIRECT
-// #blocks pointed to by all direct and indirect pointers in an inode
-#define NBLOCKS_TO_INDIRECT     (NBLOCKS_TO_DIRECT+NINDRECT*NPTRS_PER_BLOCK)
-// #blocks pointed to by all direct, indirect and doubly-indirect pointers in an indoe
-#define NBLOCKS_TO_DINDIRECT    (NBLOCKS_TO_INDIRECT+NDINDRECT*NPTRS_PER_BLOCK*NPTRS_PER_BLOCK)
-
 #define T_REG 1
 #define T_DIR 2
 #define T_DEV 3
