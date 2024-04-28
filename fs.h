@@ -1,21 +1,35 @@
-// Defines the inode super block and the indoe structure
-#include "disk.h"
 #include "types.h"
 
+// Disk layout
+//
+// reserved (for booting) | super block | log blocks | inode blocks | bitmap block | data blocks
+
+// Fixed disk parameters
+#define BLOCKSIZE 512
+#define NBLOCKS_TOT 1024 // Disk size 512k
+#define NBLOCKS_RES 64   // Reserve 64 blocks (32k) for booting (MBR and bootloader)
+
+// Fixed FS paramters
+#define NBLOCKS_LOG 30
+#define SUBLOCK_NUM NBLOCKS_RES // super block starts immediately after the reserved blocks
+#define NINODES 200
+#define FSMAGIC 0xdeadbeef
+
 struct superblock {
-    // Hardcored (see disk.h)
+    // Hardcored disk and fs parameters
     u32 ninodes;
     u32 nblock_tot;
     u32 nblock_res;
     u32 nblock_log;
     u32 nblock_dat;
-    // Derived
+    // Derived fs parameters
     u32 nblock_inode;
     // Start block of each disk section
     u32 slog;
     u32 sinode;
     u32 sbitmap;
     u32 sdata;
+    u32 magic;
 };
 
 #define NINODES_PER_BLOCK       (BLOCKSIZE/sizeof(struct dinode))
@@ -61,3 +75,8 @@ union block {
     struct dirent dirents[NDIRENTS_PER_BLOCK];
 };
 
+void fs_init(const char *vhd);
+u32 alloc_inode(u16 type);
+int free_inode(u32 n);
+int inode_write(u32 n, void *buf, u32 sz, u32 off);
+int inode_read(u32 n, void *buf, u32 sz, u32 off);

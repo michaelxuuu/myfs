@@ -1,6 +1,8 @@
 #include "fs.h"
 
 #include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <assert.h>
 #include <string.h>
@@ -12,13 +14,13 @@ struct {
 
 // Disk (block) operations
 // Write a disk block
-static void disk_read(int n, void *buf)
+static void disk_write(int n, void *buf)
 {
     assert(lseek(fs.vd, n * BLOCKSIZE, SEEK_SET) == n * BLOCKSIZE);
     assert(write(fs.vd, buf, BLOCKSIZE) == BLOCKSIZE);
 }
 // Read a disk block
-static void disk_write(int n, void *buf)
+static void disk_read(int n, void *buf)
 {
     assert(lseek(fs.vd, n * BLOCKSIZE, SEEK_SET) == n * BLOCKSIZE);
     assert(read(fs.vd, buf, BLOCKSIZE) == BLOCKSIZE);
@@ -41,7 +43,7 @@ static u32 bitmap_alloc()
             continue;
         // bytes[i] must has at least one 0 bit
         int off;
-        for (; off < 8; off++)
+        for (off = 0; off < 8; off++)
             if (!((b.bytes[i] >> off) & 1))
                 break;
         assert(off != 8);
@@ -153,7 +155,7 @@ int free_inode(u32 n)
 }
 
 // Sweep through the inode blocks and return the inum of the free inode if found.
-int alloc_indoe(u16 type) 
+u32 alloc_inode(u16 type) 
 {
     if (type > T_DEV)
         return -1;
@@ -167,7 +169,7 @@ int alloc_indoe(u16 type)
                 p->type = type;
                 p->nlink = 1;
                 disk_write(i + fs.su.sinode, &b);
-                return 0;
+                return i * NINODES_PER_BLOCK + j;
             }
         }
     }
@@ -243,19 +245,20 @@ static int recursive_write(
     u32 start = 0;
     if (sa->frst) {
         start = sa->off % BLOCKSIZE;
-        sz = BLOCKSIZE - start;
+        sz = sz < BLOCKSIZE - start ? sz : BLOCKSIZE - start;
         sa->frst = 0;
     }
-    disk_read(pp, &b);
-    memcpy(&b.bytes[start], *sa->buf, sz);
-    disk_write(pp, &b);
+    disk_read(*pp, &b);
+    memcpy(&b.bytes[start], sa->buf, sz);
+    disk_write(*pp, &b);
+    printf("write block: %d\n", *pp);
     sa->buf += sz;
     sa->left -= sz;
     sa->boff = eblock; // Must update boff.
     return 0;
 }
 
-int inode_write(u32 n, char *buf, u32 sz, u32 off)
+int inode_write(u32 n, void *buf, u32 sz, u32 off)
 {
     struct dinode di;
     u32 sbyte = off;
@@ -271,7 +274,7 @@ int inode_write(u32 n, char *buf, u32 sz, u32 off)
         .sblock = sblock,
         .eblock = eblock,
         .off = off,
-        .buf = &buf,
+        .buf = buf,
         .frst = 1,
         .left = sz
     };
@@ -286,11 +289,44 @@ int inode_write(u32 n, char *buf, u32 sz, u32 off)
     return 0;
 }
 
-int inode_read(u32 n, char b[], u32 l, u32 o)
+int inode_read(u32 n, void *buf, u32 sz, u32 off)
 {
-
+    return 0;
 }
 
-int main() {
-
+void fs_init(const char *vhd) {
+    if ((fs.vd = open(vhd, O_RDWR, 0644)) == -1) {
+        perror("open");
+        exit(1);
+    }
+    // Read super block
+    union block b;
+    disk_read(SUBLOCK_NUM, &b);
+    // fs already installed
+    if (b.su.magic == FSMAGIC) {
+        // Save a copy of on-disk super block in memory
+        fs.su = b.su;
+        return;
+    }
+    // Format vhd
+    // Zero the entire disk
+    char buf[BLOCKSIZE] = {0};
+    for (int i = 0; i < NBLOCKS_TOT; i++)
+        disk_write(i, buf);
+    // Prep super block
+    b.su.ninodes = NINODES;
+    b.su.nblock_tot = NBLOCKS_TOT;
+    b.su.nblock_res = NBLOCKS_RES;
+    b.su.nblock_log = NBLOCKS_LOG;
+    b.su.nblock_inode = NINODES / NINODES_PER_BLOCK;
+    b.su.nblock_dat = NBLOCKS_TOT - (NBLOCKS_RES + NBLOCKS_LOG + b.su.nblock_inode + 1 + 1);
+    b.su.slog = NBLOCKS_RES + 1;
+    b.su.sinode = b.su.slog + NBLOCKS_LOG;
+    b.su.sbitmap = b.su.sinode + b.su.nblock_inode;
+    b.su.sdata = b.su.sbitmap + 1;
+    b.su.magic = FSMAGIC;
+    // Write super block to disk
+    disk_write(SUBLOCK_NUM, &b);
+    // Save a copy in memory
+    fs.su = b.su;
 }
