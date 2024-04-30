@@ -11,4 +11,4 @@ testprog: *.c
 	gcc $^ -g -o $@
 
 clean:
-	rm -rf testprog* vhd 
+	rm -rf vhd 

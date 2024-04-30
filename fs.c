@@ -25,12 +25,6 @@ static void disk_read(int n, void *buf)
     assert(lseek(fs.vd, n * BLOCKSIZE, SEEK_SET) == n * BLOCKSIZE);
     assert(read(fs.vd, buf, BLOCKSIZE) == BLOCKSIZE);
 }
-// Zero a block
-static void zero_block(int n) 
-{
-    char buf[BLOCKSIZE] = {0};
-    disk_write(n, buf);
-}
 
 // Bitmap operations
 // Allocate a data block
@@ -88,6 +82,10 @@ static int write_inode(u32 n, struct dinode *p)
     return 0;
 }
 
+// Given a index into the 'ptrs' array in an inode,
+// this function returns the indirection level of the
+// pointer entry - if it's a direct, singly-indirect,
+// or a doubly-indirect pointer.
 static int get_ilevel(int ptr_idx) 
 {
     if (ptr_idx < NDIRECT)
@@ -134,7 +132,7 @@ static int free_indirect(u32 n, int ilevel)
     // Recursively free all referenced sub-level blocks
     for (int i = 0; i < NPTRS_PER_BLOCK; i++)
         if (b.ptrs[i])
-            free_indirect(b.ptrs[i], ilevel--); // Decrement ilevel per recursion
+            free_indirect(b.ptrs[i], ilevel - 1); // Decrement ilevel per recursion
     return 0;
 }
 
@@ -212,23 +210,28 @@ static int recursive_write(
         eblock += NPTRS_PER_BLOCK;
     if (ilevel == 2)
         eblock += NPTRS_PER_BLOCK*NPTRS_PER_BLOCK;
-    u32 l = sa->sblock > sblock ? sa->sblock : sblock;
-    u32 r = sa->eblock < eblock ? sa->sblock : sblock;
-    // Does the data block coverage overlap with [arg.sblock, arg.eblock]?
-    if (l > r) {
+    // Does the data block coverage [sblock, eblock) overlap with [arg.sblock, arg.eblock]?
+    if (!(sblock <= sa->eblock && sa->sblock < eblock)) {
         sa->boff = eblock;
         return 0;
     }
     // This indirect (or data) block is involved in this write,
     // so it should not be null and we should allocate it if null.
+    int zero = 0;
+    if (!*pp && ilevel)
+        zero = 1;
     if (!*pp && !(*pp = bitmap_alloc()))
         return -1; // ran out of free blocks
+    if (zero) {
+        char zeros[BLOCKSIZE] = {0};
+        disk_write(*pp, &zeros);
+    }
     union block b;
     // It is an indirect block, start recursion.
     if (ilevel) {
         disk_read(*pp, &b);
         for (int i = 0; i < NPTRS_PER_BLOCK; i++)
-            if (recursive_write(&b.ptrs[i], ilevel--, sa)) {
+            if (recursive_write(&b.ptrs[i], ilevel - 1, sa)) {
                 // If write failed half way, we do nt woll back, but
                 // leave the blocks already written and abort. However,
                 // we do need to update the indirect block that has been
@@ -294,6 +297,43 @@ int inode_read(u32 n, void *buf, u32 sz, u32 off)
     return 0;
 }
 
+// Iterate through all inode blocks, identify used inodes, and counting
+// the total number of data blocks and indirect blocks in use. Add this
+// sum to the count of free data blocks obtained from the bitmap. The 
+// resulting total should match the number of data blocks indicated by
+// the super block. Later, this function will verify if all inodes in use
+// are reachable through a comprehensive directory traversal.
+static void fs_checker() {
+
+}
+
+static void printsu() {
+    printf("superblock:\n"
+            "#inodes:%u\n"
+            "#blocks(tot):%u\n"
+            "#blocks(res):%u\n"
+            "#blocks(log):%u\n"
+            "#blocks(ino):%u\n"
+            "#blocks(dat):%u\n"
+            "start(log):%u\n"
+            "start(ino):%u\n"
+            "start(bmp):%u\n"
+            "start(dat):%u\n"
+            "magic:%x\n",
+            fs.su.ninodes, 
+            fs.su.nblock_tot, 
+            fs.su.nblock_res,
+            fs.su.nblock_log,
+            fs.su.nblock_inode,
+            fs.su.nblock_dat,
+            fs.su.slog,
+            fs.su.sinode,
+            fs.su.sbitmap,
+            fs.su.sdata,
+            fs.su.magic
+    );
+}
+
 void fs_init(const char *vhd) {
     if ((fs.vd = open(vhd, O_RDWR, 0644)) == -1) {
         perror("open");
@@ -306,6 +346,7 @@ void fs_init(const char *vhd) {
     if (b.su.magic == FSMAGIC) {
         // Save a copy of on-disk super block in memory
         fs.su = b.su;
+        printsu();
         return;
     }
     // Format vhd
@@ -329,4 +370,5 @@ void fs_init(const char *vhd) {
     disk_write(SUBLOCK_NUM, &b);
     // Save a copy in memory
     fs.su = b.su;
+    printsu();
 }
