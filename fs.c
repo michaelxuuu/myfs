@@ -7,6 +7,8 @@
 #include <assert.h>
 #include <string.h>
 
+static void fs_checker();
+
 struct {
     int vd; // file desc pointing to the "virtual disk"
     struct superblock su; // in-memory copy of super block
@@ -32,7 +34,7 @@ static u32 bitmap_alloc()
 {
     union block b;
     disk_read(fs.su.sbitmap, &b);
-    for (int i = 0; i < fs.su.nblock_tot; i ++) {
+    for (int i = 0; i < fs.su.nblock_dat / 8; i++) {
         if (b.bytes[i] == 0xff)
             continue;
         // bytes[i] must has at least one 0 bit
@@ -40,6 +42,8 @@ static u32 bitmap_alloc()
         for (off = 0; off < 8; off++)
             if (!((b.bytes[i] >> off) & 1))
                 break;
+        if (off + i * 8 >= fs.su.nblock_dat)
+            return 0;
         assert(off != 8);
         b.bytes[i] |= 1 << off;
         disk_write(fs.su.sbitmap, &b);
@@ -289,6 +293,7 @@ int inode_write(u32 n, void *buf, u32 sz, u32 off)
             break;
         }
     assert(!write_inode(n, &di));
+    fs_checker();
     return 0;
 }
 
@@ -297,14 +302,43 @@ int inode_read(u32 n, void *buf, u32 sz, u32 off)
     return 0;
 }
 
-// Iterate through all inode blocks, identify used inodes, and counting
+static u32 recursive_count(u32 ptr, int ilevel) {
+    if (!ptr)
+        return 0;
+    if (!ilevel)
+        return 1;
+    union block b;
+    u32 cnt = 1; // include this indirect block
+    disk_read(ptr, &b);
+    for (int i = 0; i < NPTRS_PER_BLOCK; i++)
+        cnt += recursive_count(b.ptrs[i], ilevel - 1);
+    return cnt;
+}
+
+// Iterate through all inode blocks, identify used inodes, and count
 // the total number of data blocks and indirect blocks in use. Add this
 // sum to the count of free data blocks obtained from the bitmap. The 
 // resulting total should match the number of data blocks indicated by
 // the super block. Later, this function will verify if all inodes in use
 // are reachable through a comprehensive directory traversal.
 static void fs_checker() {
-
+    union block b;
+    // Count the number of data blocks referenced by inodes
+    u32 datacnt1 = 0;
+    u32 datacnt2 = 0;
+    for (int i = 0; i < fs.su.nblock_inode; i++) {
+        disk_read(fs.su.sinode + i, &b);
+        for (int j = 0; j < NINODES_PER_BLOCK; j++)
+            for (int k = 0; k < NPTRS; k++)
+                datacnt1 += recursive_count(b.inodes[j].ptrs[k], get_ilevel(k));
+    }
+    // Count the number of data blocks marked as used in the bitmap
+    disk_read(fs.su.sbitmap, &b);
+    for (int i = 0; i < fs.su.nblock_dat / 8; i++)
+        for (int off = 0; off < 8; off++)
+            if (((b.bytes[i] >> off) & 1) && (off + i * 8) < fs.su.nblock_dat)
+                datacnt2 += 1;
+    assert(datacnt1 == datacnt2);
 }
 
 static void printsu() {
