@@ -315,12 +315,7 @@ static u32 recursive_count(u32 ptr, int ilevel) {
     return cnt;
 }
 
-// Iterate through all inode blocks, identify used inodes, and count
-// the total number of data blocks and indirect blocks in use. Add this
-// sum to the count of free data blocks obtained from the bitmap. The 
-// resulting total should match the number of data blocks indicated by
-// the super block. Later, this function will verify if all inodes in use
-// are reachable through a comprehensive directory traversal.
+// Check fs correctness
 static void fs_checker() {
     union block b;
     // Count the number of data blocks referenced by inodes
