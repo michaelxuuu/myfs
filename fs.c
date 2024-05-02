@@ -292,17 +292,96 @@ int inode_write(u32 n, void *buf, u32 sz, u32 off)
             di.size = di.size > ebyte ? di.size : ebyte;
             break;
         }
+    di.size = di.size > ebyte ? di.size : ebyte;
     assert(!write_inode(n, &di));
     fs_checker();
     return 0;
 }
 
-int inode_read(u32 n, void *buf, u32 sz, u32 off)
-{
+int recursive_read(u32 ptr, int ilevel, struct share_arg *sa) {
+    union block b;
+    // Do we skip this indirect block?
+    if (!sa->left)
+        return 0;
+    u32 sblock = sa->boff;
+    u32 eblock = sa->boff;
+    if (!ilevel)
+        eblock += 1;
+    else if (ilevel == 1)
+        eblock += NPTRS_PER_BLOCK;
+    else if (ilevel == 2)
+        eblock += NPTRS_PER_BLOCK*NPTRS_PER_BLOCK;
+    else
+        assert(0);
+    // Do [sblock, eblock) and [sa->sblock, sa->eblock] overlap?
+    if (!(sblock <= sa->eblock && sa->sblock < eblock)) {
+        sa->boff = eblock;
+        return 0;
+    }
+    // Handle parse file
+    if (!ptr) {
+        u32 sz = (eblock - sblock)*BLOCKSIZE;
+        memset(sa->buf, 0, sz);
+        sa->buf += sz;
+        sa->left -= sz;
+        sa->boff = eblock - sblock;
+        return 0;
+    }
+    // Is 'ptr' indirect?
+    if (ilevel) {
+        disk_read(ptr, &b);
+        for (int i = 0; i < NPTRS_PER_BLOCK; i++)
+            if (recursive_read(b.ptrs[i], ilevel - 1, sa))
+                return -1;
+        return 0;
+    }
+    // 'ptr' is direct
+    u32 sz = sa->left < BLOCKSIZE ? sa->left : BLOCKSIZE;
+    u32 start = 0;
+    if (sa->frst) {
+        start = sa->off % BLOCKSIZE;
+        sz = sz < BLOCKSIZE - start ? sz : BLOCKSIZE - start;
+        sa->frst = 0;
+    }
+    disk_read(ptr, &b);
+    memcpy(sa->buf, &b.bytes[start], sz);
+    printf("read block: %d\n", ptr);
+    sa->buf += sz;
+    sa->left -= sz;
+    sa->boff = eblock; // Must update boff.
     return 0;
 }
 
-static u32 recursive_count(u32 ptr, int ilevel) {
+int inode_read(u32 n, void *buf, u32 sz, u32 off)
+{
+    union block b;
+    struct dinode di;
+    u32 sbyte = off;
+    u32 ebyte = off + sz;
+    u32 sblock = sbyte/BLOCKSIZE;
+    u32 eblock = sbyte/BLOCKSIZE;
+    if (n >= fs.su.ninodes)
+        return -1;
+    read_inode(n, &di);
+    if (sbyte > di.size)
+        return -1;
+    struct share_arg *sa = &(struct share_arg){
+        .boff = 0,
+        .sblock = sblock,
+        .eblock = eblock,
+        .off = off,
+        .buf = buf,
+        .frst = 1,
+        .left = sz
+    };
+    for (int i = 0; i < NPTRS; i++)
+        if (recursive_read(di.ptrs[i], get_ilevel(i), sa))
+            return -1;
+    return 0;
+}
+
+static u32 recursive_count(u32 ptr, int ilevel) 
+{
     if (!ptr)
         return 0;
     if (!ilevel)
@@ -316,7 +395,8 @@ static u32 recursive_count(u32 ptr, int ilevel) {
 }
 
 // Check fs correctness
-static void fs_checker() {
+static void fs_checker() 
+{
     union block b;
     // Count the number of data blocks referenced by inodes
     u32 datacnt1 = 0;
@@ -324,8 +404,9 @@ static void fs_checker() {
     for (int i = 0; i < fs.su.nblock_inode; i++) {
         disk_read(fs.su.sinode + i, &b);
         for (int j = 0; j < NINODES_PER_BLOCK; j++)
-            for (int k = 0; k < NPTRS; k++)
-                datacnt1 += recursive_count(b.inodes[j].ptrs[k], get_ilevel(k));
+            if (b.inodes[j].type)
+                for (int k = 0; k < NPTRS; k++)
+                    datacnt1 += recursive_count(b.inodes[j].ptrs[k], get_ilevel(k));
     }
     // Count the number of data blocks marked as used in the bitmap
     disk_read(fs.su.sbitmap, &b);
@@ -334,6 +415,59 @@ static void fs_checker() {
             if (((b.bytes[i] >> off) & 1) && (off + i * 8) < fs.su.nblock_dat)
                 datacnt2 += 1;
     assert(datacnt1 == datacnt2);
+}
+
+// Look up 'name' under the directory pointed to by 'inum.'
+// Return the inum of 'name' if found and 0 otherwise.
+static u32 dir_lookup(u32 inum, const char *name) 
+{
+    struct dinode di;
+    if (inum >= fs.su.ninodes)
+        return NULLINUM;
+    read_inode(inum, &di);
+    // Not a directory
+    if (di.type != T_DIR)
+        return NULLINUM;
+    u32 off = 0;
+    for (int i = 0; i < di.size / sizeof(struct dirent); 
+        i++, off += sizeof(struct dirent)) {
+        struct dirent de;
+        inode_read(inum, &de, sizeof(struct dirent), off);
+        if (!strcmp(de.name, name))
+            return de.inum;
+    }
+    return NULLINUM;
+}
+
+#define MAX_FILE_PATH 512
+u32 fs_lookup(const char *path) {
+    // Max file path length capped to 512 bytes,
+    // *excluding* the terminating 0
+    int l = strnlen(path, MAX_FILE_PATH + 1);
+    if (l > MAX_FILE_PATH || l < 1)
+        return NULLINUM;
+    // This function only start finding from root
+    // restricting path must be preceeded by '/'
+    if (path[0] != '/')
+        return NULLINUM;
+    // shortest path is "/" - root path
+    if (l == 1)
+        return ROOTINUM;
+    // Parse the path
+    char buf[MAX_FILE_PATH + 1] = {0};
+    strncpy(buf, path + 1, sizeof buf); // add 1 to path to skip '/'
+    l -= 1;                             // - 1 from l from the same reason
+    // replace all '/'s with '\0's to break the path into individual sub-strings
+    for (int i = 0; buf[i]; i++)
+        if (buf[i] == '/')
+            buf[i] = NULLINUM;
+    u32 inum = ROOTINUM; // start from root
+    for (int i = 0; i < l; i += strlen(&buf[i])) {
+        char *name = &buf[i];
+        if (!(inum = dir_lookup(inum, name)))
+            return NULLINUM;
+    }
+    return inum;
 }
 
 static void printsu() {
@@ -400,4 +534,7 @@ void fs_init(const char *vhd) {
     // Save a copy in memory
     fs.su = b.su;
     printsu();
+    // Reserve inode 0 and 1
+    alloc_inode(T_DIR);
+    alloc_inode(T_DIR);
 }

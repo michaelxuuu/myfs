@@ -14,6 +14,8 @@
 #define SUBLOCK_NUM NBLOCKS_RES // super block starts immediately after the reserved blocks
 #define NINODES 200
 #define FSMAGIC 0xdeadbeef
+#define NULLINUM 0
+#define ROOTINUM 1 // root directory inode number
 
 struct superblock {
     // Hardcored disk and fs parameters
@@ -52,7 +54,7 @@ struct dinode {
   u16 minor;
   u16 nlink;
   u32 size;
-  u32 ptrs[NDIRECT+NINDRECT];
+  u32 ptrs[NPTRS];
 };
 
 // Directory entry sturcture
@@ -80,3 +82,4 @@ u32 alloc_inode(u16 type);
 int free_inode(u32 n);
 int inode_write(u32 n, void *buf, u32 sz, u32 off);
 int inode_read(u32 n, void *buf, u32 sz, u32 off);
+u32 fs_lookup(const char *path);
