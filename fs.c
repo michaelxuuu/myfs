@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <assert.h>
 #include <string.h>
+#include <stdarg.h>
 
 static void fs_checker();
 
@@ -24,10 +25,18 @@ static void fs_checker();
  * @brief Structure representing the file system
  */
 struct FileSystem {
+    FILE *log;
     int vd;                 /**< File descriptor pointing to the "virtual disk" */
     struct superblock su;   /**< In-memory copy of the superblock */
 } fs;
 
+static void mylog(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(fs.log, format, args);
+    va_end(args);
+    fflush(fs.log);
+}
 
 /**
  * @brief Write a disk block
@@ -336,7 +345,7 @@ static int recursive_rw(
         disk_write(*pp, &b);
     } else
         memcpy(sa->buf, &b.bytes[start], sz);
-    printf(sa->w ? "write block: %d\n" : "read block: %d\n", *pp);
+    mylog(sa->w ? "write block: %d\n" : "read block: %d\n", *pp);
     sa->buf += sz;
     sa->left -= sz;
     sa->off += sz;
@@ -489,7 +498,6 @@ static const char *get_name(const char *path, int n) {
 
 #define MAX_FILE_PATH 512
 u32 fs_lookup(const char *path) {
-    printf("lookup: %s\n", path);
     // Max file path length capped to 512 bytes,
     // *excluding* the terminating 0
     int l = strnlen(path, MAX_FILE_PATH + 1);
@@ -526,7 +534,7 @@ u32 fs_lookup(const char *path) {
  * 
  */
 static void printsu() {
-    printf("superblock:\n"
+    mylog("superblock:\n"
             "#inodes:%u\n"
             "#blocks(tot):%u\n"
             "#blocks(res):%u\n"
@@ -565,6 +573,11 @@ int stat_inode(u32 inum, struct stat *st) {
 }
 
 void fs_init(const char *vhd) {
+    if (!(fs.log = fopen("log", "w"))) {
+        perror("fopen");
+        exit(1);
+    }
+
     if ((fs.vd = open(vhd, O_RDWR, 0644)) == -1) {
         perror("open");
         exit(1);

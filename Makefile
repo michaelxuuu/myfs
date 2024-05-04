@@ -15,4 +15,4 @@ testprog: *.c
 	gcc $^ -g -o $@
 
 clean:
-	rm -rf vhd testprog *.txt
+	rm -rf vhd testprog *.txt log
