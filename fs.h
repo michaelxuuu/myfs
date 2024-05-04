@@ -60,12 +60,12 @@ struct superblock {
 #define T_DEV 3
 // On-disk inode sturcture
 struct dinode {
-  u16 type;
-  u16 major;
-  u16 minor;
-  u16 nlink;
-  u32 size;
-  u32 ptrs[NPTRS];
+    u16 type;
+    u16 major;
+    u16 minor;
+    u16 nlink;
+    u32 size;
+    u32 ptrs[NPTRS];
 };
 
 // Directory entry sturcture
@@ -88,9 +88,18 @@ union block {
     struct dirent dirents[NDIRENTS_PER_BLOCK];
 };
 
+struct stat {
+    u16 type;
+    u16 major;
+    u16 minor;
+    u16 nlink;
+    u32 size;
+};
+
 void fs_init(const char *vhd);
 u32 alloc_inode(u16 type);
 int free_inode(u32 n);
+int stat_inode(u32 inum, struct stat *st);
 u32 inode_read(u32 n, void *buf, u32 sz, u32 off);
 u32 inode_write(u32 n, void *buf, u32 sz, u32 off);
 u32 fs_lookup(const char *path);

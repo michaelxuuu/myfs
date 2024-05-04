@@ -527,6 +527,18 @@ static void printsu() {
     );
 }
 
+int stat_inode(u32 inum, struct stat *st) {
+    if (inum >= fs.su.ninodes)
+        return -1;
+    struct dinode di;
+    read_inode(inum, &di);
+    st->type = di.type;
+    st->major = di.major;
+    st->minor = di.minor;
+    st->size = di.size;
+    return 0;
+}
+
 void fs_init(const char *vhd) {
     if ((fs.vd = open(vhd, O_RDWR, 0644)) == -1) {
         perror("open");
