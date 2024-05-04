@@ -194,8 +194,6 @@ struct share_arg {
     // the [sblock, eblock] interval, and we skip this block if not.
     u32 off;    // Same off in inode_rw()
     char *buf;  // Same buf in inode_rw()
-    u32 frst;   // Is it our first block write where the start byte and write size
-                // are calculated differently
     u32 left;   // Number of bytes left
     int w;      // Recursive write? Recursive read if 0
 };
@@ -218,6 +216,7 @@ static int recursive_rw(
     // Do [sblock, eblock) and [sa->sblock, sa->eblock], the *block coverage* of this w/r operation overlap?
     if (!(sblock <= sa->eblock && sa->sblock < eblock)) {
         sa->boff = eblock;
+        sa->off += (eblock - sblock) * BLOCKSIZE;
         return 0;
     }
     if (sa->w) {
@@ -235,11 +234,12 @@ static int recursive_rw(
     } else {
         // Handle reading sparse files
         if (!*pp) {
-            u32 sz = (eblock - sblock)*BLOCKSIZE;
+            u32 sz = (eblock - sblock) * BLOCKSIZE;
             memset(sa->buf, 0, sz);
             sa->buf += sz;
             sa->left -= sz;
-            sa->boff = eblock - sblock;
+            sa->off += sz;
+            sa->boff = eblock;
             return 0;
         }
     }
@@ -261,13 +261,8 @@ static int recursive_rw(
         return 0;
     }
     // It's a data block.
-    u32 sz = sa->left < BLOCKSIZE ? sa->left : BLOCKSIZE;
-    u32 start = 0;
-    if (sa->frst) {
-        start = sa->off % BLOCKSIZE;
-        sz = sz < BLOCKSIZE - start ? sz : BLOCKSIZE - start;
-        sa->frst = 0;
-    }
+    u32 start = sa->off % BLOCKSIZE;
+    u32 sz = sa->left < (BLOCKSIZE - start) ? sa->left : (BLOCKSIZE - start);
     disk_read(*pp, &b);
     if (sa->w) {
         memcpy(&b.bytes[start], sa->buf, sz);
@@ -277,6 +272,7 @@ static int recursive_rw(
     printf(sa->w ? "write block: %d\n" : "read block: %d\n", *pp);
     sa->buf += sz;
     sa->left -= sz;
+    sa->off += sz;
     sa->boff = eblock; // Must update boff.
     return 0;
 }
@@ -286,19 +282,24 @@ static u32 inode_rw(u32 n, void *buf, u32 sz, u32 off, int w)
     struct dinode di;
     u32 sbyte = off;
     u32 ebyte = off + sz;
-    u32 sblock = sbyte/BLOCKSIZE;
-    u32 eblock = sbyte/BLOCKSIZE;
     if (n >= fs.su.ninodes)
         return -1;
     if (read_inode(n, &di))
         return -1;
+    if (!w && sbyte >= di.size)
+        return 0;
+    if (!w && ebyte >= di.size) {
+        ebyte = di.size;
+        sz = di.size - sbyte;
+    }
+    u32 sblock = sbyte/BLOCKSIZE;
+    u32 eblock = sbyte/BLOCKSIZE;
     struct share_arg *sa = &(struct share_arg){
         .boff = 0,
         .sblock = sblock,
         .eblock = eblock,
         .off = off,
         .buf = buf,
-        .frst = 1,
         .left = sz,
         .w = w
     };

@@ -1,22 +1,51 @@
 #include "fs.h"
 
+#include <unistd.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 
-#define TEST_BSIZE 128
-#define TEST_TEXT "Lily wakes up..."
-#define TEST_TEXT_SZ strlen(TEST_TEXT)
-#define TEST_FNAME "lily"
+#define TEST_FNAME "test"
+
+static void to_myfs(const char *name, u32 inum) {
+    int fd = open(name, O_RDWR, 0644);
+    assert(fd >= 0);
+    char c;
+    u32 off = 0;
+    for (;;) {
+        int n;
+        assert((n = read(fd, &c, 1)) >= 0);
+        if (!n)
+            break;
+        printf("%d\n", off);
+        assert(inode_write(inum, &c, 1, off++));
+    }
+    close(fd);
+}
+
+static void to_hostfs(u32 inum, const char *name) {
+    int fd = open(name, O_CREAT | O_TRUNC | O_RDWR , 0644);
+    assert(fd >= 0);
+    char c;
+    u32 off = 0;
+    for (;;) {
+        int n;
+        assert((n = inode_read(inum, &c, 1, off++)) >= 0);
+        if (!n)
+            break;
+        assert(write(fd, &c, 1));
+    }
+    close(fd);
+}
 
 int main(int argc, char *argv[]) 
 {
     fs_init(argv[1]);
-    char b1[TEST_BSIZE] = TEST_TEXT;
-    char b2[TEST_BSIZE] = {0};
     // create a file
     u32 i0 = alloc_inode(T_REG);
-    // write b1 to the file
-    inode_write(i0, &b1, TEST_TEXT_SZ, 0);
+    // migrate the test file from the host fs to my fs
+    to_myfs("random.txt", i0);
     // put the file under root dir
     struct dirent de = {
         .inum = i0,
@@ -26,6 +55,5 @@ int main(int argc, char *argv[])
     // look up the file
     u32 i1 = fs_lookup("/" TEST_FNAME);
     // read from the file to see if it gives us the original text
-    inode_read(i1, &b2, TEST_TEXT_SZ, 0);
-    printf("%s\n", b2);
+    to_hostfs(i1, "random1.txt");
 }
