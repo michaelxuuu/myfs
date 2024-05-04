@@ -359,8 +359,6 @@ static u32 inode_rw(u32 n, void *buf, u32 sz, u32 off, int w)
     struct dinode di;
     u32 sbyte = off;
     u32 ebyte = off + sz;
-    u32 sblock = sbyte/BLOCKSIZE;
-    u32 eblock = ebyte/BLOCKSIZE;
     // Invalid inode number
     if (n >= fs.su.ninodes)
         return -1;
