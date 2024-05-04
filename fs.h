@@ -1,8 +1,19 @@
+/**
+ * @file fs.h
+ * @author 
+ * @brief 
+ * @version 0.1
+ * @date 2024-05-03
+ * 
+ * @copyright Copyright (c) 2024
+ * 
+ */
+
 #include "types.h"
 
 // Disk layout
 //
-// reserved (for booting) | super block | log blocks | inode blocks | bitmap block | data blocks
+// reserved (for booting) (s0) | super block (s64) | log blocks (s65) | inode blocks (s95) | bitmap block (s120) | data blocks (s121)
 
 // Fixed disk parameters
 #define BLOCKSIZE 512
