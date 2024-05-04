@@ -1,18 +1,15 @@
-run: testprog vhd random.txt
-	./testprog vhd
-	diff random.txt random1.txt
+TEST_MODE = random
 
-dbg: testprog vhd random.txt
-	lldb ./testprog vhd
+test: test_ clean
 
-random.txt:
-	python3 rand.py
+test_: main vhd
+	./main $(TEST_MODE) vhd
 
 vhd:
 	dd if=/dev/zero of=vhd bs=512 count=1024
 
-testprog: *.c
+main: *.c
 	gcc $^ -g -o $@
 
 clean:
-	rm -rf vhd testprog *.txt log
+	rm -rf vhd main log

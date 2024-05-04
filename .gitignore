@@ -3,6 +3,5 @@
 *.dSYM
 testprog
 vhd
-__pycache__
 *.txt
 log
