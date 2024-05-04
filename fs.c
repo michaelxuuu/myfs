@@ -236,12 +236,12 @@ u32 alloc_inode(u16 type)
     return -1;
 }
 
-// This is the last argument of recursive_write(), and the struct 
+// This is the last argument of recursive_rw(), and the struct 
 // members are shared among all recursive calls simultaneously.
 // This reduces the number of arguments to be passed and makes 
 // the code more concise and readable. The struct contains elements
-// that have only one global copy across all instances of recursive_write(),
-// generated from a single call to inode_write(), while each recursive_write() 
+// that have only one global copy across all instances of recursive_rw(),
+// generated from a single call to inode_rw(), while each recursive_rw() 
 // call has their own private copies of the other two arguments.
 struct share_arg {
     u32 boff;   // Current block offset within a file
@@ -250,12 +250,12 @@ struct share_arg {
     // Note: For each block pointed to by pp, we test if the data block it covers
     // or itself if it is a data block (*boff + nblocks linked to it) overlaps with 
     // the [sblock, eblock] interval, and we skip this block if not.
-    u32 off;    // Same off in inode_write()
-    char *buf;  // Same buf in inode_write()
-    u32 frst;   // Is it our first block write where the start byte and write size
-                // are calculated differently
+    u32 off;    // Same off in inode_rw()
+    char *buf;  // Same buf in inode_rw()
     u32 left;   // Number of bytes left
+    int w;      // Recursive write? Recursive read if 0
 };
+
 
 /**
  * @brief Recursively writes data to disk blocks or indirect blocks.
@@ -265,13 +265,13 @@ struct share_arg {
  * @param sa Pointer to a struct share_arg containing shared arguments for the write operation.
  * @return int Returns 0 on success, -1 on failure.
  */
-static int recursive_write(
+static int recursive_rw(
     u32 *pp,    // Pointer to a block pointer (which could be in an inode or an indirect pointer that caller traverses)
     u32 ilevel, // Recursion level. 0 means we've reached a data block.
     struct share_arg *sa
 ) {
-    // Do we skip this block?
-    // Compute data block coverage of this indirect (or data) block
+    // Do we skip this indirect block?
+    // Compute data *block coverage* of this indirect (or data) block: [sblock, eblock)
     u32 sblock = sa->boff;
     u32 eblock = sa->boff;
     if (ilevel == 0)
@@ -280,56 +280,70 @@ static int recursive_write(
         eblock += NPTRS_PER_BLOCK;
     if (ilevel == 2)
         eblock += NPTRS_PER_BLOCK*NPTRS_PER_BLOCK;
-    // Does the data block coverage [sblock, eblock) overlap with [arg.sblock, arg.eblock]?
+    // Do [sblock, eblock) and [sa->sblock, sa->eblock], the *block coverage* of this w/r operation overlap?
     if (!(sblock <= sa->eblock && sa->sblock < eblock)) {
         sa->boff = eblock;
+        sa->off += (eblock - sblock) * BLOCKSIZE;
         return 0;
     }
-    // This indirect (or data) block is involved in this write,
-    // so it should not be null and we should allocate it if null.
-    int zero = 0;
-    if (!*pp && ilevel)
-        zero = 1;
-    if (!*pp && !(*pp = bitmap_alloc()))
-        return -1; // ran out of free blocks
-    if (zero) {
-        char zeros[BLOCKSIZE] = {0};
-        disk_write(*pp, &zeros);
+    if (sa->w) {
+        // This indirect (or data) block is involved in this w/r,
+        // so it should not be null and we should allocate it if null.
+        int zero = 0;
+        if (!*pp && ilevel)
+            zero = 1;
+        if (!*pp && !(*pp = bitmap_alloc()))
+            return -1; // ran out of free blocks
+        if (zero) {
+            char zeros[BLOCKSIZE] = {0};
+            disk_write(*pp, &zeros);
+        }
+    } else {
+        // Handle reading sparse files
+        if (!*pp) {
+            u32 sz = (eblock - sblock) * BLOCKSIZE;
+            memset(sa->buf, 0, sz);
+            sa->buf += sz;
+            sa->left -= sz;
+            sa->off += sz;
+            sa->boff = eblock;
+            return 0;
+        }
     }
     union block b;
     // It is an indirect block, start recursion.
     if (ilevel) {
         disk_read(*pp, &b);
         for (int i = 0; i < NPTRS_PER_BLOCK; i++)
-            if (recursive_write(&b.ptrs[i], ilevel - 1, sa)) {
-                // If write failed half way, we do nt woll back, but
+            if (recursive_rw(&b.ptrs[i], ilevel - 1, sa)) {
+                // If a write failed half way, we do *not* roll back, but
                 // leave the blocks already written and abort. However,
-                // we do need to update the indirect block that has been
+                // we DO need to update the indirect block that has been
                 // modified. That's why we're writing back to disk this
                 // indirect block.
-                disk_write(*pp, &b);
+                if (sa->w) disk_write(*pp, &b);
                 return -1;
             }
         disk_write(*pp, &b);
         return 0;
     }
     // It's a data block.
-    u32 sz = sa->left < BLOCKSIZE ? sa->left : BLOCKSIZE;
-    u32 start = 0;
-    if (sa->frst) {
-        start = sa->off % BLOCKSIZE;
-        sz = sz < BLOCKSIZE - start ? sz : BLOCKSIZE - start;
-        sa->frst = 0;
-    }
+    u32 start = sa->off % BLOCKSIZE;
+    u32 sz = sa->left < (BLOCKSIZE - start) ? sa->left : (BLOCKSIZE - start);
     disk_read(*pp, &b);
-    memcpy(&b.bytes[start], sa->buf, sz);
-    disk_write(*pp, &b);
-    printf("write block: %d\n", *pp);
+    if (sa->w) {
+        memcpy(&b.bytes[start], sa->buf, sz);
+        disk_write(*pp, &b);
+    } else
+        memcpy(sa->buf, &b.bytes[start], sz);
+    printf(sa->w ? "write block: %d\n" : "read block: %d\n", *pp);
     sa->buf += sz;
     sa->left -= sz;
+    sa->off += sz;
     sa->boff = eblock; // Must update boff.
     return 0;
 }
+
 
 /**
  * @brief Writes data to an inode within the file system.
@@ -340,7 +354,7 @@ static int recursive_write(
  * @param off The offset where the writing should start.
  * @return int Returns 0 if the write operation is successful, otherwise returns -1.
  */
-int inode_write(u32 n, void *buf, u32 sz, u32 off)
+static u32 inode_rw(u32 n, void *buf, u32 sz, u32 off, int w)
 {
     struct dinode di;
     u32 sbyte = off;
@@ -353,109 +367,45 @@ int inode_write(u32 n, void *buf, u32 sz, u32 off)
     // Read inode structure
     if (read_inode(n, &di))
         return -1;
-    struct share_arg *sa = &(struct share_arg){
-        .boff = 0,
-        .sblock = sblock,
-        .eblock = eblock,
-        .off = off,
-        .buf = buf,
-        .frst = 1,
-        .left = sz
-    };
-
-    for (int i = 0; i < NPTRS; i++)
-        if (recursive_write(&di.ptrs[i], get_ilevel(i), sa)) {
-            u32 written = sz - sa->left;
-            ebyte = written + off;
-            di.size = di.size > ebyte ? di.size : ebyte;
-            break;
-        }
-    di.size = di.size > ebyte ? di.size : ebyte;
-    assert(!write_inode(n, &di));
-    fs_checker();
-    return 0;
-}
-
-int recursive_read(u32 ptr, int ilevel, struct share_arg *sa) {
-    union block b;
-    // Do we skip this indirect block?
-    if (!sa->left)
+    if (!w && sbyte >= di.size)
         return 0;
-    u32 sblock = sa->boff;
-    u32 eblock = sa->boff;
-    if (!ilevel)
-        eblock += 1;
-    else if (ilevel == 1)
-        eblock += NPTRS_PER_BLOCK;
-    else if (ilevel == 2)
-        eblock += NPTRS_PER_BLOCK*NPTRS_PER_BLOCK;
-    else
-        assert(0);
-    // Do [sblock, eblock) and [sa->sblock, sa->eblock] overlap?
-    if (!(sblock <= sa->eblock && sa->sblock < eblock)) {
-        sa->boff = eblock;
-        return 0;
+    if (!w && ebyte >= di.size) {
+        ebyte = di.size;
+        sz = di.size - sbyte;
     }
-    // Handle parse file
-    if (!ptr) {
-        u32 sz = (eblock - sblock)*BLOCKSIZE;
-        memset(sa->buf, 0, sz);
-        sa->buf += sz;
-        sa->left -= sz;
-        sa->boff = eblock - sblock;
-        return 0;
-    }
-    // Is 'ptr' indirect?
-    if (ilevel) {
-        disk_read(ptr, &b);
-        for (int i = 0; i < NPTRS_PER_BLOCK; i++)
-            if (recursive_read(b.ptrs[i], ilevel - 1, sa))
-                return -1;
-        return 0;
-    }
-    // 'ptr' is direct
-    u32 sz = sa->left < BLOCKSIZE ? sa->left : BLOCKSIZE;
-    u32 start = 0;
-    if (sa->frst) {
-        start = sa->off % BLOCKSIZE;
-        sz = sz < BLOCKSIZE - start ? sz : BLOCKSIZE - start;
-        sa->frst = 0;
-    }
-    disk_read(ptr, &b);
-    memcpy(sa->buf, &b.bytes[start], sz);
-    printf("read block: %d\n", ptr);
-    sa->buf += sz;
-    sa->left -= sz;
-    sa->boff = eblock; // Must update boff.
-    return 0;
-}
-
-int inode_read(u32 n, void *buf, u32 sz, u32 off)
-{
-    union block b;
-    struct dinode di;
-    u32 sbyte = off;
-    u32 ebyte = off + sz;
     u32 sblock = sbyte/BLOCKSIZE;
     u32 eblock = sbyte/BLOCKSIZE;
-    if (n >= fs.su.ninodes)
-        return -1;
-    read_inode(n, &di);
-    if (sbyte > di.size)
-        return -1;
     struct share_arg *sa = &(struct share_arg){
         .boff = 0,
         .sblock = sblock,
         .eblock = eblock,
         .off = off,
         .buf = buf,
-        .frst = 1,
-        .left = sz
+        .left = sz,
+        .w = w
     };
+
     for (int i = 0; i < NPTRS; i++)
-        if (recursive_read(di.ptrs[i], get_ilevel(i), sa))
-            return -1;
-    return 0;
+        if (recursive_rw(&di.ptrs[i], get_ilevel(i), sa))
+            break;
+    u32 consumed = sz - sa->left;
+    ebyte = off + consumed; // ebyte should remain unchanged if consumed equals sz, 
+                            // indicating that the required amount of bytes has been successfully 
+                            // consumed from buf (write) or from disk (read)
+    di.size = di.size > ebyte ? di.size : ebyte; // update inode size in case it's a write operation
+    if (w) {
+        assert(!write_inode(n, &di)); // update inode
+        fs_checker();
+    }
+    return consumed;
+}
+
+u32 inode_write(u32 n, void *buf, u32 sz, u32 off) {
+    return inode_rw(n, buf, sz, off, 1);
+}
+
+u32 inode_read(u32 n, void *buf, u32 sz, u32 off) {
+    return inode_rw(n, buf, sz, off, 0);
 }
 
 static u32 recursive_count(u32 ptr, int ilevel) 

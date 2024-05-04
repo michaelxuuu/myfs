@@ -91,6 +91,6 @@ union block {
 void fs_init(const char *vhd);
 u32 alloc_inode(u16 type);
 int free_inode(u32 n);
-int inode_write(u32 n, void *buf, u32 sz, u32 off);
-int inode_read(u32 n, void *buf, u32 sz, u32 off);
+u32 inode_read(u32 n, void *buf, u32 sz, u32 off);
+u32 inode_write(u32 n, void *buf, u32 sz, u32 off);
 u32 fs_lookup(const char *path);
