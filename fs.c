@@ -465,8 +465,31 @@ static u32 dir_lookup(u32 inum, const char *name)
     return NULLINUM;
 }
 
+static int name_len(const char *name) {
+    for (int i = 0; ; i++)
+        if (!name[i] || name[i] == '/')
+            return i;
+}
+
+static const char *get_name(const char *path, int n) {
+    int nn = 0, s = 0;
+    for (int i = 0; path[i]; i++) {
+        // Start of a name
+        if (path[i] != ' ' && !s) {
+            if (nn++ == n)
+                return &path[i];
+            s = !s;
+        }
+        // Start of slashes
+        if (path[i] == '/' && s)
+            s = !s;
+    }
+    return 0;
+}
+
 #define MAX_FILE_PATH 512
 u32 fs_lookup(const char *path) {
+    printf("lookup: %s\n", path);
     // Max file path length capped to 512 bytes,
     // *excluding* the terminating 0
     int l = strnlen(path, MAX_FILE_PATH + 1);
@@ -480,16 +503,18 @@ u32 fs_lookup(const char *path) {
     if (l == 1)
         return ROOTINUM;
     // Parse the path
-    char buf[MAX_FILE_PATH + 1] = {0};
-    strncpy(buf, path + 1, sizeof buf); // add 1 to path to skip '/'
-    l -= 1;                             // - 1 from l from the same reason
-    // replace all '/'s with '\0's to break the path into individual sub-strings
-    for (int i = 0; buf[i]; i++)
-        if (buf[i] == '/')
-            buf[i] = NULLINUM;
+    path += 1;  // add 1 to path to skip '/'
     u32 inum = ROOTINUM; // start from root
-    for (int i = 0; i < l; i += strlen(&buf[i])) {
-        char *name = &buf[i];
+    char name[MAX_FILE_NAME];
+    for (int i = 0; ; i++) {
+        const char *p = get_name(path, i); // get ith name from path[]
+        if (!p)
+            break;
+        int nl = name_len(p);
+        if (nl == MAX_FILE_NAME) // name too long
+            return NULLINUM;
+        strncpy(name, p, nl);
+        name[nl] = 0;
         if (!(inum = dir_lookup(inum, name)))
             return NULLINUM;
     }
