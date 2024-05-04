@@ -1,3 +1,14 @@
+/**
+ * @file fs.c
+ * @author 
+ * @brief 
+ * @version 0.1
+ * @date 2024-05-03
+ * 
+ * @copyright Copyright (c) 2024
+ * 
+ */
+
 #include "fs.h"
 
 #include <fcntl.h>
@@ -9,27 +20,44 @@
 
 static void fs_checker();
 
-struct {
-    int vd; // file desc pointing to the "virtual disk"
-    struct superblock su; // in-memory copy of super block
+/**
+ * @brief Structure representing the file system
+ */
+struct FileSystem {
+    int vd;                 /**< File descriptor pointing to the "virtual disk" */
+    struct superblock su;   /**< In-memory copy of the superblock */
 } fs;
 
-// Disk (block) operations
-// Write a disk block
+
+/**
+ * @brief Write a disk block
+ * 
+ * @param n     The number of the block where the data is to be written
+ * @param buf   A pointer to the buffer containing the data to be written to the disk block
+ */
 static void disk_write(int n, void *buf)
 {
     assert(lseek(fs.vd, n * BLOCKSIZE, SEEK_SET) == n * BLOCKSIZE);
     assert(write(fs.vd, buf, BLOCKSIZE) == BLOCKSIZE);
 }
-// Read a disk block
+
+/**
+ * @brief Read a disk block
+ * 
+ * @param n     The number of the block to be read from
+ * @param buf   A pointer to the buffer where the read data will be stored
+ */
 static void disk_read(int n, void *buf)
 {
     assert(lseek(fs.vd, n * BLOCKSIZE, SEEK_SET) == n * BLOCKSIZE);
     assert(read(fs.vd, buf, BLOCKSIZE) == BLOCKSIZE);
 }
 
-// Bitmap operations
-// Allocate a data block
+/**
+ * @brief Bitmap operations: Allocate a data block
+ * 
+ * @return u32  The number of the allocated data block, or 0 if allocation fails
+ */
 static u32 bitmap_alloc() 
 {
     union block b;
@@ -51,7 +79,14 @@ static u32 bitmap_alloc()
     }
     return 0;
 }
-// Free a data block
+
+/**
+ * @brief Bitmap operations: Free a data block
+ * 
+ * @param n The number of the data block to be freed
+ * @return int  Returns 0 if the data block is successfully freed, or -1 if an error occurs
+ * 
+ */
 static int bitmap_free(u32 n) 
 {
     union block b;
@@ -66,17 +101,30 @@ static int bitmap_free(u32 n)
     return 0;
 }
 
-// inode operations
-// Load the inode with the inode number 'n' into memory
+/**
+ * @brief Reads an inode from the disk into memory.
+ * 
+ * @param n The inode number of the inode to be read.
+ * @param p Pointer to the struct dinode where the read inode will be stored.
+ * @return int Returns 0 on success, -1 on failure.
+ */
 static int read_inode(u32 n, struct dinode *p) 
 {
     union block b;
+    // Read a inode block to the buffer
     disk_read(fs.su.sinode + n/NINODES_PER_BLOCK, &b);
+    // Read the target inode
     *p = b.inodes[n%NINODES_PER_BLOCK];
     return 0;
 }
 
-// Update the on-disk inode with the inode number 'n'
+/**
+ * @brief Update the on-disk inode with the inode number 'n'.
+ * 
+ * @param n The inode number of the inode to be written.
+ * @param p Pointer to the struct dinode containing the inode to be written.
+ * @return int Returns 0 on success, -1 on failure.
+ */
 static int write_inode(u32 n, struct dinode *p) 
 {
     union block b;
@@ -156,20 +204,30 @@ int free_inode(u32 n)
     return 0;
 }
 
-// Sweep through the inode blocks and return the inum of the free inode if found.
+/**
+ * @brief Allocate an inode
+ * 
+ * @param type The type of the inode to be allocated
+ * @return u32 The inode number of the allocated inode, or -1 if allocation fails
+ */
 u32 alloc_inode(u16 type) 
 {
+    // Invalid inode type, return error
     if (type > T_DEV)
         return -1;
+    // Loop through all blocks for inode
     for (int i = 0; i < fs.su.nblock_inode; i++) {
         union block b;
+        // Read current inode block to the buffer
         disk_read(i + fs.su.sinode, &b);
         for (int j = 0; j < NINODES_PER_BLOCK; j++) {
+            // Found a unallocated inode
             if (!b.inodes[j].type) {
                 struct dinode *p = &b.inodes[j];
                 memset(p, 0, sizeof(*p));
                 p->type = type;
                 p->nlink = 1;
+                // Write back updated inode block
                 disk_write(i + fs.su.sinode, &b);
                 return i * NINODES_PER_BLOCK + j;
             }
@@ -199,6 +257,14 @@ struct share_arg {
     u32 left;   // Number of bytes left
 };
 
+/**
+ * @brief Recursively writes data to disk blocks or indirect blocks.
+ * 
+ * @param pp Pointer to a block pointer (which could be in an inode or an indirect pointer that caller traverses).
+ * @param ilevel Recursion level. 0 means we've reached a data block.
+ * @param sa Pointer to a struct share_arg containing shared arguments for the write operation.
+ * @return int Returns 0 on success, -1 on failure.
+ */
 static int recursive_write(
     u32 *pp,    // Pointer to a block pointer (which could be in an inode or an indirect pointer that caller traverses)
     u32 ilevel, // Recursion level. 0 means we've reached a data block.
@@ -265,15 +331,26 @@ static int recursive_write(
     return 0;
 }
 
+/**
+ * @brief Writes data to an inode within the file system.
+ * 
+ * @param n The inode number representing the inode to which data will be written.
+ * @param buf A pointer to the buffer containing the data to be written.
+ * @param sz The size of the data to be written.
+ * @param off The offset where the writing should start.
+ * @return int Returns 0 if the write operation is successful, otherwise returns -1.
+ */
 int inode_write(u32 n, void *buf, u32 sz, u32 off)
 {
     struct dinode di;
     u32 sbyte = off;
     u32 ebyte = off + sz;
     u32 sblock = sbyte/BLOCKSIZE;
-    u32 eblock = sbyte/BLOCKSIZE;
+    u32 eblock = ebyte/BLOCKSIZE;
+    // Invalid inode number
     if (n >= fs.su.ninodes)
         return -1;
+    // Read inode structure
     if (read_inode(n, &di))
         return -1;
     struct share_arg *sa = &(struct share_arg){
@@ -285,6 +362,7 @@ int inode_write(u32 n, void *buf, u32 sz, u32 off)
         .frst = 1,
         .left = sz
     };
+
     for (int i = 0; i < NPTRS; i++)
         if (recursive_write(&di.ptrs[i], get_ilevel(i), sa)) {
             u32 written = sz - sa->left;
@@ -470,6 +548,10 @@ u32 fs_lookup(const char *path) {
     return inum;
 }
 
+/**
+ * @brief print superblock information
+ * 
+ */
 static void printsu() {
     printf("superblock:\n"
             "#inodes:%u\n"
@@ -487,7 +569,7 @@ static void printsu() {
             fs.su.nblock_tot, 
             fs.su.nblock_res,
             fs.su.nblock_log,
-            fs.su.nblock_inode,
+            fs.su.nblock_inode, 
             fs.su.nblock_dat,
             fs.su.slog,
             fs.su.sinode,
@@ -524,8 +606,8 @@ void fs_init(const char *vhd) {
     b.su.nblock_log = NBLOCKS_LOG;
     b.su.nblock_inode = NINODES / NINODES_PER_BLOCK;
     b.su.nblock_dat = NBLOCKS_TOT - (NBLOCKS_RES + NBLOCKS_LOG + b.su.nblock_inode + 1 + 1);
-    b.su.slog = NBLOCKS_RES + 1;
-    b.su.sinode = b.su.slog + NBLOCKS_LOG;
+    b.su.slog = NBLOCKS_RES + 1; // 65
+    b.su.sinode = b.su.slog + NBLOCKS_LOG; // 65 + 30
     b.su.sbitmap = b.su.sinode + b.su.nblock_inode;
     b.su.sdata = b.su.sbitmap + 1;
     b.su.magic = FSMAGIC;
