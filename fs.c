@@ -372,7 +372,7 @@ static u32 inode_rw(u32 n, void *buf, u32 sz, u32 off, int w)
         sz = di.size - sbyte;
     }
     u32 sblock = sbyte/BLOCKSIZE;
-    u32 eblock = sbyte/BLOCKSIZE;
+    u32 eblock = ebyte/BLOCKSIZE;
     struct share_arg *sa = &(struct share_arg){
         .boff = 0,
         .sblock = sblock,
