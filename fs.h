@@ -102,4 +102,4 @@ int free_inode(u32 n);
 int stat_inode(u32 inum, struct stat *st);
 u32 inode_read(u32 n, void *buf, u32 sz, u32 off);
 u32 inode_write(u32 n, void *buf, u32 sz, u32 off);
-u32 fs_lookup(const char *path);
+u32 fs_lookup(char *path);
