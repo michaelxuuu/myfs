@@ -225,6 +225,7 @@ int randomword(char word[]) {
 // Generate a file of random words with the specified size
 void randomfile(const char *name, int size) {
     FILE *f;
+    srand(time(0));
     if (!(f = fopen(name, "w"))) {
         perror("fopen");
         exit(1);
