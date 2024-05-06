@@ -117,7 +117,7 @@ static int bitmap_free(u32 n)
  * @param p Pointer to the struct dinode where the read inode will be stored.
  * @return int Returns 0 on success, -1 on failure.
  */
-static int read_inode(u32 n, struct dinode *p) 
+int read_inode(u32 n, struct dinode *p) 
 {
     union block b;
     // Read a inode block to the buffer
@@ -134,7 +134,7 @@ static int read_inode(u32 n, struct dinode *p)
  * @param p Pointer to the struct dinode containing the inode to be written.
  * @return int Returns 0 on success, -1 on failure.
  */
-static int write_inode(u32 n, struct dinode *p) 
+int write_inode(u32 n, struct dinode *p) 
 {
     union block b;
     disk_read(fs.su.sinode + n/NINODES_PER_BLOCK, &b);
@@ -235,7 +235,6 @@ u32 alloc_inode(u16 type)
                 struct dinode *p = &b.inodes[j];
                 memset(p, 0, sizeof(*p));
                 p->type = type;
-                p->nlink = 1;
                 // Write back updated inode block
                 disk_write(i + fs.su.sinode, &b);
                 return i * NINODES_PER_BLOCK + j;
@@ -452,61 +451,6 @@ static void fs_checker()
     assert(datacnt1 == datacnt2);
 }
 
-// Look up 'name' under the directory pointed to by 'inum.'
-// Return the inum of 'name' if found and 0 otherwise.
-static u32 dir_lookup(u32 inum, const char *name) 
-{
-    struct dinode di;
-    if (inum >= fs.su.ninodes)
-        return NULLINUM;
-    read_inode(inum, &di);
-    // Not a directory
-    if (di.type != T_DIR)
-        return NULLINUM;
-    u32 off = 0;
-    for (int i = 0; i < di.size / sizeof(struct dirent); 
-        i++, off += sizeof(struct dirent)) {
-        struct dirent de;
-        inode_read(inum, &de, sizeof(struct dirent), off);
-        if (!strcmp(de.name, name))
-            return de.inum;
-    }
-    return NULLINUM;
-}
-
-#define MAX_FILE_PATH 512
-u32 fs_lookup(char *path) {
-    // Max file path length capped to 512 bytes,
-    // *excluding* the terminating 0
-    int l = strnlen(path, MAX_FILE_PATH + 1);
-    if (l > MAX_FILE_PATH || l < 1)
-        return NULLINUM;
-    // This function only start finding from root
-    // restricting path must be preceeded by '/'
-    if (path[0] != '/')
-        return NULLINUM;
-    // Parse the path
-    u32 inum = ROOTINUM; // start from root
-    for (;;) {
-        // skip preceeding slashes
-        for (; *path && *path == '/'; path++);
-        if (!*path)
-            break;
-        // copy the next name from path
-        char name[MAX_FILE_NAME];
-        for (l = 0; *path && *path != '/'; l++, path++) {
-            if (l >= MAX_FILE_NAME)
-                return NULLINUM;
-            name[l] = *path;
-        }
-        // null-term the name
-        name[l] = 0;
-        if (!(inum = dir_lookup(inum, name)))
-            return NULLINUM;
-    }
-    return inum;
-}
-
 /**
  * @brief print superblock information
  * 
@@ -536,18 +480,6 @@ static void printsu() {
             fs.su.sdata,
             fs.su.magic
     );
-}
-
-int stat_inode(u32 inum, struct stat *st) {
-    if (inum >= fs.su.ninodes)
-        return -1;
-    struct dinode di;
-    read_inode(inum, &di);
-    st->type = di.type;
-    st->major = di.major;
-    st->minor = di.minor;
-    st->size = di.size;
-    return 0;
 }
 
 void fs_init(const char *vhd) {

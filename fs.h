@@ -63,7 +63,7 @@ struct dinode {
     u16 type;
     u16 major;
     u16 minor;
-    u16 nlink;
+    u16 linkcnt;
     u32 size;
     u32 ptrs[NPTRS];
 };
@@ -74,10 +74,10 @@ struct dinode {
 // These directory entries contain the inode number of the file they point to,
 // allowing us to access the file content, as well as the associated file name.
 // This structure enables file retrieval by path.
-#define MAX_FILE_NAME 14
+#define MAXNAME 14
 struct dirent {
     u16 inum;
-    char name[MAX_FILE_NAME];
+    char name[MAXNAME];
 };
 
 union block {
@@ -88,18 +88,10 @@ union block {
     struct dirent dirents[NDIRENTS_PER_BLOCK];
 };
 
-struct stat {
-    u16 type;
-    u16 major;
-    u16 minor;
-    u16 nlink;
-    u32 size;
-};
-
 void fs_init(const char *vhd);
 u32 alloc_inode(u16 type);
 int free_inode(u32 n);
-int stat_inode(u32 inum, struct stat *st);
+int read_inode(u32 n, struct dinode *p);
+int write_inode(u32 n, struct dinode *p);
 u32 inode_read(u32 n, void *buf, u32 sz, u32 off);
 u32 inode_write(u32 n, void *buf, u32 sz, u32 off);
-u32 fs_lookup(char *path);
