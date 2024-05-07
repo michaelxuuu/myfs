@@ -19,45 +19,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 
-static void to_myfs(const char *name, u32 inum) {
-    int fd = open(name, O_RDWR, 0644);
-    assert(fd >= 0);
-    char c;
-    u32 off = 0;
-    for (;;) {
-        int n;
-        assert((n = read(fd, &c, 1)) >= 0);
-        if (!n)
-            break;
-        assert(inode_write(inum, &c, 1, off++));
-    }
-    close(fd);
-}
-
-static void to_hostfs(u32 inum, const char *name) {
-    int fd = open(name, O_CREAT | O_TRUNC | O_RDWR , 0644);
-    assert(fd >= 0);
-    char c;
-    u32 off = 0;
-    for (;;) {
-        int n;
-        assert((n = inode_read(inum, &c, 1, off++)) >= 0);
-        if (!n)
-            break;
-        assert(write(fd, &c, 1));
-    }
-    close(fd);
-}
-
-int arg_len(char *arg) {
+static int arg_len(char *arg) {
     for (int i = 0; ; i++)
         if (!arg[i] || arg[i] == ' ')
             return i;
 }
 
-char *get_arg(char *buf, int n) {
+static char *get_arg(char *buf, int n) {
     int nn = 0, s = 0;
     for (int i = 0; buf[i]; i++) {
         // Start of an arg
@@ -73,7 +44,7 @@ char *get_arg(char *buf, int n) {
     return 0;
 }
 
-int parse_args(char *buf, char *args[], int argct) {
+static int parse_args(char *buf, char *args[], int argct) {
     int i = 0;
     int cnt = 0;
     // Get 'argct' args or fewer if not as many
@@ -88,7 +59,7 @@ int parse_args(char *buf, char *args[], int argct) {
     return cnt;
 }
 
-void ls(char *path) {
+static void cmd_ls(char *path) {
     int fd;
     if (!path)
         return;
@@ -105,130 +76,98 @@ void ls(char *path) {
     assert(!myfs_close(fd));
 }
 
-void mkdir(char *path) {
+static void cmd_mkdir(char *path) {
     if (myfs_mknod(path, T_DIR)) {
         fprintf(stderr, "myfs_mkdir failed\n");
         return;
     }
 }
 
-#define CMDLEN 16
-void interactive_test() {
-    for (;;) {
-        char cmd[CMDLEN];
-        printf("> "), fflush(stdout);
-        int n = read(STDIN_FILENO, cmd, CMDLEN);
-        if (n > CMDLEN - 1) {
-            int tmp;
-            while ((tmp = read(STDIN_FILENO, cmd, CMDLEN)) == CMDLEN);
-            printf("command too long\n");
-            continue;
-        }
-        cmd[n - 1] = 0; // minus 1 to be rid of \n
-        char *args[2];
-        if (!parse_args(cmd, args, 2))
-            continue;
-        if (!strncmp(args[0], "ls", 2))
-            ls(args[1]);
-        else if (!strncmp(args[0], "mkdir", 2))
-            mkdir(args[1]);
-        else if (!strncmp(args[0], "quit", 2))
-            exit(0);
+static void cmd_migrate(char *mypath, char *hostpath) {
+    int hostfd = open(hostpath, O_RDONLY, 0644);
+    if (hostfd < 0) {
+        fprintf(stderr, "%s not found in host fs\n", hostpath);
+        return;
     }
-}
-
-#define RUN(...) \
-    do { \
-        if (!fork()) { \
-            if (execlp(__VA_ARGS__, NULL) == -1) { \
-                perror("execl"); \
-                exit(EXIT_FAILURE); \
-            } \
-        } else { \
-            wait(NULL); \
-        } \
-    } while (0)
-
-// random file generator :)
-#define MAXWORD 23
-// Generate a random number in the range [0, 24) which 
-// will be used to determine (1) the length of a word
-// and (2) letters in a word
-int random24() {
-    return rand() % 24;
-}
-// Generate a random word
-int randomword(char word[]) {
-    int wlen = random24();
-    for (int i = 0; i < wlen; i++)
-        word[i] = 'a' + random24();
-    word[wlen] = 0;
-    return wlen;
-}
-// Generate a file of random words with the specified size
-void randomfile(const char *name, int size) {
-    FILE *f;
-    srand(time(0));
-    if (!(f = fopen(name, "w"))) {
-        perror("fopen");
-        exit(1);
+    int myfd;
+    if (myfs_mknod(mypath, T_REG)) {
+        fprintf(stderr, "failed to create %s in myfs\n", mypath);
+        return;
     }
-    char word[MAXWORD + 1];
-    int written = 0;
+    assert((myfd = myfs_open(mypath, O_WRONLY)) >= 0);
+    char c;
     for (;;) {
-        int wlen = randomword(word);
-        if (wlen + written + 1 > size)
+        int n;
+        assert((n = read(hostfd, &c, 1)) >= 0);
+        if (!n)
             break;
-        fprintf(f, "%s\n", word);
-        written += (wlen + 1);
+        assert(myfs_write(myfd, &c, 1));
     }
-    if (written < size) {
-        char c = '\n';
-        for (int i = 0; i < written - size; i++)
-            fwrite(&c, sizeof(char), 1, f);
-    }
+    assert(close(hostfd) >= 0);
+    assert(myfs_close(myfd) >= 0);
 }
 
-void random_test() {
-    // // create a file
-    // u32 i0 = alloc_inode(T_REG);
-    // // generate a random file
-    // randomfile("random.txt", 1024);
-    // // migrate the test file from the host fs to my fs
-    // to_myfs("random.txt", i0);
-    // // put the file under root dir
-    // struct dirent de = {
-    //     .inum = i0,
-    //     .name = "random",
-    // };
-    // inode_write(ROOTINUM, &de, sizeof(de), 0);
-    // // look up the file
-    // u32 i1 = fs_lookup("/random");
-    // // read from the file to see if it gives us the original text
-    // to_hostfs(i1, "random1.txt");
-    // // compare random.txt and random1.txt
-    // RUN("diff", "diff", "random.txt", "random1.txt");
-    // // cleanup
-    // remove("random.txt");
-    // remove("random1.txt");
+static void cmd_retrieve(char *hostpath, char *mypath) {
+    int hostfd = open(hostpath, O_CREAT | O_TRUNC | O_WRONLY , 0644);
+    int myfd = myfs_open(mypath, O_RDONLY);
+    if (hostfd < 0) {
+        perror("host open");
+        return;
+    }
+    if (myfd < 0) {
+        fprintf(stderr, "%s not found in myfs\n", mypath);
+        close(hostfd);
+        return;
+    }
+    char c;
+    for (;;) {
+        int n;
+        assert((n = myfs_read(myfd, &c, 1)) >= 0);
+        if (!n)
+            break;
+        assert(write(hostfd, &c, 1));
+    }
+    assert(close(hostfd) >= 0);
+    assert(myfs_close(myfd) >= 0);
 }
 
+#define CMDLEN 32
 int main(int argc, char *argv[]) 
 {
-    if (argc < 3) {
-        fprintf(stderr, "usage: test <test_mode> <vhd_path>\n test_mode [interactive random]");
+    if (argc < 2) {
+        fprintf(stderr, "usage: test <vhd_path>\n");
         exit(1);
     }
-    char *tmod = argv[1];
-    char *path = argv[2];
-    if (!strncmp(tmod, "interactive", strlen("interactive"))) {
-        fs_init(path);
-        interactive_test();
-    } else if (!strncmp(tmod, "random", strlen("random"))) {
-        fs_init(path);
-        random_test();
-    } else {
-        fprintf(stderr, "test_mode can either be interactive or random\n");
-        exit(1);
+    fs_init(argv[1]);
+    for (;;) {
+        char cmd[CMDLEN];
+        fgets(cmd, CMDLEN, stdin);
+        cmd[strlen(cmd) - 1] = 0;
+        char *args[3];
+        int cnt = parse_args(cmd, args, 3);
+        if (!cnt)
+            continue;
+        if (!strncmp(args[0], "ls", 2)) {
+            if (cnt < 2)
+                fprintf(stdout, "usage: ls <path>\n");
+            else
+                cmd_ls(args[1]);
+        } else if (!strncmp(args[0], "mkdir", 5)) {
+            if (cnt < 2)
+                fprintf(stdout, "usage: mkdir <path>\n");
+            else
+                cmd_mkdir(args[1]);
+        } else if (!strncmp(args[0], "migrate", 7)) {
+            if (cnt < 3)
+                fprintf(stdout, "usage: migrate <myfs_path> <host_path>\n");
+            else
+                cmd_migrate(args[1], args[2]);
+        } else if (!strncmp(args[0], "retrieve", 8)) {
+            if (cnt < 3)
+                fprintf(stdout, "usage: retrieve <host_path> <myfs_path>\n");
+            else
+                cmd_retrieve(args[1], args[2]);
+        } else if (!strncmp(args[0], "quit", 4))
+            exit(0);
     }
 }
