@@ -141,6 +141,7 @@ int main(int argc, char *argv[])
     fs_init(argv[1]);
     for (;;) {
         char cmd[CMDLEN];
+        printf("> "), fflush(stdout);
         fgets(cmd, CMDLEN, stdin);
         cmd[strlen(cmd) - 1] = 0;
         char *args[3];

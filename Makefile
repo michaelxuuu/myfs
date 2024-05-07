@@ -11,7 +11,7 @@ ifeq ($(TMODE), auto)
 test_: main vhd
 	./autotest.sh
 else
-test_: main vhd input.txt
+test_: main vhd
 	./main vhd
 endif
 
