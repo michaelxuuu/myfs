@@ -138,30 +138,30 @@ static void cmd_sparse(char *path) {
         return;
     }
     assert((fd = myfs_open(path, O_RDWR)) >= 0);
-    char c;
-    c = 'a';
+    char c = '@';
+    // write to the first data block
     assert(myfs_write(fd, &c, 1) == 1);
-    c = 'b';
+    // write to the first data block pointed by the first singly-indirect block
     assert(myfs_seek(fd, NDIRECT*BLOCKSIZE) >= 0);
     assert(myfs_write(fd, &c, 1) == 1);
-    c = 'c';
+    // write to the first data block pointed by the first doubly-indirect block
     assert(myfs_seek(fd, NDIRECT*BLOCKSIZE+NINDRECT*BLOCKSIZE*BLOCKSIZE) >= 0);
     assert(myfs_write(fd, &c, 1) == 1);
-
-    c = '*';
+    // check file size
+    struct filestat st;
+    assert(myfs_stat(fd, &st) >= 0);
+    assert(st.size == NDIRECT*BLOCKSIZE+NINDRECT*BLOCKSIZE*BLOCKSIZE+1);
+    // some random reads from the ranges that are not allocated data blocks but valid
     assert(myfs_seek(fd, BLOCKSIZE) >= 0);
     assert(myfs_read(fd, &c, 1) == 1);
-    printf("%c\n", c);
-
+    assert(c == '\0');
     assert(myfs_seek(fd, NDIRECT*BLOCKSIZE+BLOCKSIZE) >= 0);
     assert(myfs_read(fd, &c, 1) == 1);
-    printf("%c\n", c);
-
+    assert(c == '\0');
+    // this read falls into an allocated data block
     assert(myfs_seek(fd, NDIRECT*BLOCKSIZE+NINDRECT*BLOCKSIZE*BLOCKSIZE) >= 0);
     assert(myfs_read(fd, &c, 1) == 1);
-    printf("%c\n", c);
-
-
+    assert(c == '@');
     myfs_close(fd);
 }
 
