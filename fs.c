@@ -310,6 +310,8 @@ static int recursive_rw(
         // Handle reading sparse files
         if (!*pp) {
             u32 sz = (eblock - sblock) * BLOCKSIZE;
+            if (sa->left < sz)
+                sz = sa->left;
             memset(sa->buf, 0, sz);
             sa->buf += sz;
             sa->left -= sz;

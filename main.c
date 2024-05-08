@@ -131,6 +131,40 @@ static void cmd_retrieve(char *hostpath, char *mypath) {
     assert(myfs_close(myfd) >= 0);
 }
 
+static void cmd_sparse(char *path) {
+    int fd;
+    if (myfs_mknod(path, T_REG)) {
+        fprintf(stderr, "failed to create %s in myfs\n", path);
+        return;
+    }
+    assert((fd = myfs_open(path, O_RDWR)) >= 0);
+    char c;
+    c = 'a';
+    assert(myfs_write(fd, &c, 1) == 1);
+    c = 'b';
+    assert(myfs_seek(fd, NDIRECT*BLOCKSIZE) >= 0);
+    assert(myfs_write(fd, &c, 1) == 1);
+    c = 'c';
+    assert(myfs_seek(fd, NDIRECT*BLOCKSIZE+NINDRECT*BLOCKSIZE*BLOCKSIZE) >= 0);
+    assert(myfs_write(fd, &c, 1) == 1);
+
+    c = '*';
+    assert(myfs_seek(fd, BLOCKSIZE) >= 0);
+    assert(myfs_read(fd, &c, 1) == 1);
+    printf("%c\n", c);
+
+    assert(myfs_seek(fd, NDIRECT*BLOCKSIZE+BLOCKSIZE) >= 0);
+    assert(myfs_read(fd, &c, 1) == 1);
+    printf("%c\n", c);
+
+    assert(myfs_seek(fd, NDIRECT*BLOCKSIZE+NINDRECT*BLOCKSIZE*BLOCKSIZE) >= 0);
+    assert(myfs_read(fd, &c, 1) == 1);
+    printf("%c\n", c);
+
+
+    myfs_close(fd);
+}
+
 #define CMDLEN 32
 int main(int argc, char *argv[]) 
 {
@@ -168,6 +202,11 @@ int main(int argc, char *argv[])
                 fprintf(stdout, "usage: retrieve <host_path> <myfs_path>\n");
             else
                 cmd_retrieve(args[1], args[2]);
+        } else if (!strncmp(args[0], "sparse", 6)) {
+            if (cnt < 2)
+                fprintf(stdout, "usage: sparse <path>\n");
+            else
+                cmd_sparse(args[1]);
         } else if (!strncmp(args[0], "quit", 4))
             exit(0);
     }
